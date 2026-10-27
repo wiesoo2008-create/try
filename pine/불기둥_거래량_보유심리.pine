@@ -1,0 +1,53 @@
+//@version=6
+indicator("불기둥 거래량 · 보유심리 [스승님 기법]", shorttitle = "불기둥 거래량", overlay = false, format = format.volume)
+
+// ════════════════════════════════════════════════════════════════════════════
+//  스승님 거래량 설정: 전일보다 많으면 빨간색, 적으면 파란색
+//  · 거래량이 터졌다 = 관심이자 저항값. 그 거래량을 '중화'시키는 조정이 나와야 간다.
+//  · 큰 거래량 뒤 조정을 받으면서 거래량이 줄면(1/10 수준) 보유심리 → 재돌파 때 강하게 돌파.
+//  · 왕년에 놀던 저점 근처에서 거래량이 실종되면 '안 판다' 심리 → 저점만 찍으면 날아간다.
+//  · 상단에서 거래량 터지면 정리 준비. 하단 거래량과 상단 거래량을 헷갈리지 말 것.
+//  · 일봉 90%, 거래량 9% — 거래량은 일봉의 위치와 함께 읽는다.
+// ════════════════════════════════════════════════════════════════════════════
+
+color upCol      = input.color(#FF3B30, "전일보다 많음 (빨강)")
+color dnCol      = input.color(#2F6BFF, "전일보다 적음 (파랑)")
+int   avgLen     = input.int(20, "평균 기간", minval = 2)
+float climaxMult = input.float(3.0, "거래량 터짐: 평균 ×", minval = 1.5, step = 0.1)
+float holdRatio  = input.float(0.5, "보유심리: 터진 거래량 대비 ≤", minval = 0.05, maxval = 1.0, step = 0.05)
+int   holdBars   = input.int(15, "보유심리 확인 기간(봉)", minval = 2)
+float dryRatio   = input.float(0.4, "거래량 실종: 평균 ×", minval = 0.05, maxval = 1.0, step = 0.05)
+int   maxLen     = input.int(250, "최대 거래량 기간(봉)", minval = 20)
+float upperPct   = input.float(29.5, "상한가 기준 %", minval = 5.0, step = 0.5)
+
+float avgV    = ta.sma(volume, avgLen)
+bool  climax  = nz(avgV) > 0 and volume >= avgV * climaxMult
+float hiV     = ta.highest(volume, maxLen)
+bool  maxVol  = not na(hiV) and volume >= hiV and climax
+int   bsC     = ta.barssince(climax)
+float cVol    = ta.valuewhen(climax, volume, 0)
+float cLow    = ta.valuewhen(climax, low, 0)
+float lo60    = ta.lowest(low, 60)
+float hh60    = ta.highest(high, 60)
+float prevC   = nz(close[1], open)
+float chg     = prevC > 0 ? (close / prevC - 1.0) * 100.0 : 0.0
+
+bool hold = not na(bsC) and bsC > 0 and bsC <= holdBars and close <= prevC and nz(cVol) > 0 and volume <= cVol * holdRatio and close >= nz(cLow)
+bool dry  = nz(avgV) > 0 and volume <= avgV * dryRatio and not na(lo60) and low <= lo60 * 1.05
+bool topClimax = climax and not na(hh60) and high >= hh60 * 0.95 and chg > 0
+bool upperNoVol = chg >= upperPct and nz(avgV) > 0 and volume < avgV * 1.5
+
+plot(volume, "거래량", color = volume >= nz(volume[1]) ? upCol : dnCol, style = plot.style_columns)
+plot(avgV, "평균 거래량", color = color.new(#9AA4B2, 0), linewidth = 1)
+plot(nz(avgV) * climaxMult, "거래량 터짐 기준", color = color.new(#FF9500, 60), linewidth = 1, style = plot.style_line)
+
+plotshape(climax and not maxVol and not topClimax, "거래량 터짐 (관심·저항값)", shape.triangledown, location.top, color.new(#FF9500, 0), text = "터짐", textcolor = color.new(#FF9500, 0), size = size.tiny)
+plotshape(maxVol, "최대 거래량 (돌파 후 조정 = 집팔고 논팔고)", shape.diamond, location.top, color.new(#9C27FF, 0), text = "최대", textcolor = color.new(#9C27FF, 0), size = size.small)
+plotshape(topClimax and not maxVol, "상단 거래량 터짐 (정리 준비)", shape.xcross, location.top, color.new(#1E5BFF, 0), text = "상단", textcolor = color.new(#1E5BFF, 0), size = size.tiny)
+plotshape(hold, "보유심리 (거래량 줄며 조정)", shape.circle, location.bottom, color.new(#FF2D55, 0), text = "보유", textcolor = color.new(#FF2D55, 0), size = size.tiny)
+plotshape(dry, "거래량 실종 (안 판다)", shape.square, location.bottom, color.new(#00A86B, 0), text = "실종", textcolor = color.new(#00A86B, 0), size = size.tiny)
+plotshape(upperNoVol, "거래량 없는 상한가", shape.flag, location.top, color.new(#FF3B30, 0), text = "무거래 상", textcolor = color.new(#FF3B30, 0), size = size.tiny)
+
+alertcondition(hold, "보유심리 (거래량 줄며 조정)", "불기둥 거래량: 거래량 터진 뒤 거래량 줄며 조정 = 보유심리 {{ticker}}")
+alertcondition(maxVol, "최대 거래량", "불기둥 거래량: 최대 거래량 출현 — 이 자리 돌파 후 조정을 기다리세요 {{ticker}}")
+alertcondition(topClimax, "상단 거래량 터짐", "불기둥 거래량: 상단에서 거래량 터짐 — 정리 준비 {{ticker}}")
