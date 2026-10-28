@@ -1,0 +1,1293 @@
+//@version=6
+indicator("불기둥 스승님 [일봉심리 · 매물대 · 매매]", shorttitle = "불기둥 스승님", overlay = true, max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500, max_bars_back = 1000)  //#IND
+strategy("불기둥 스승님 전략 [일봉심리 · 매물대 · 매매]", shorttitle = "불기둥 스승님 전략", overlay = true, max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500, max_bars_back = 1000, pyramiding = 3, process_orders_on_close = true, initial_capital = 100000000, commission_type = strategy.commission.percent, commission_value = 0.1, calc_on_every_tick = false)  //#STR
+
+// ════════════════════════════════════════════════════════════════════════════
+//  불기둥 스승님 — 차트를 스승님처럼 읽고, 스승님처럼 사고 판다
+// ────────────────────────────────────────────────────────────────────────────
+//  "제가 주식을 어떤 식으로 하는지 궁금하시죠? 어느 지점을 돌파하지 않으면
+//   아무리 저점이라도 안 쳐다봐요. 힘이 가장 강한 자리에서 기다려요."
+//
+//  읽기 (일봉 99%, 거래량 1%)
+//   · 매물대 = 사람들이 사고 판 자리. 힘쓴 자리 밀림, 하락중 양봉, 끊긴 종가(갭하락),
+//     도망간 자리, 윗꼬리 센타(다음날 공격 못하면), 장대음봉 센타·시가, 갭상 무꼬리 음봉,
+//     거래량 터진 자리, 상장 고점, 바닥에서 올라온 고점
+//   · 매물대는 뚫으면 조정의 시작 → 돌파 · 조정 · 재돌파로 소화되면 지나가는 자리(지지)
+//   · 저점 = 그 밑으로 빠져도 바로 회복하는 자력구간. 바닥에서 올라온 고점 밑은 과매도
+//   · 차트 종류: 단물 빠진 차트, 일자 호재 차트, 하락중, 저점 미확인, 보유자 영역,
+//     대장 돌파 후 조정, 신고가(위 매물 없음), 매물 소화중, 박스, 상단 올라탄 차트
+//  매매
+//   · 사는 자리 ① 줄 그은데 돌파하고 조정 나오면 산다 (절대 양봉에서 사지 않는다)
+//              ② 저점 X원 이하 걸어놓고 기다린다 (차트가 만들어진 종목만)
+//              ③ 고점 돌파 후 조정 받다 바로 재돌파하면 따라간다 (추가)
+//              ④ 신고가 종목은 5일선 눌림
+//   · 비중: 대장·최대거래량 돌파후 조정 = 집팔고 논팔고(3/3), 저점 2/3, 나머지 1/3
+//   · 파는 자리: 다음 매물대의 90%. 위에 매물이 없으면 팔지 않고 보유,
+//     고점 큰 갭상은 던지고, 고점 상한가·마무리 장대양봉 뒤 밀리면 정리
+//   · 손절은 함부로 하지 않는다. 저점(자력구간)이 깨질 때만 정리
+// ════════════════════════════════════════════════════════════════════════════
+
+// ───────────────────────── 입력 ─────────────────────────
+string G0 = "⓪ 스승님 매매"
+bool   useTrade    = input.bool(true, "스승님 가상 매매 (매수·매도·비중)", group = G0, tooltip = "지표가 스승님 규칙대로 직접 사고 팝니다. 차트에 '스승님 매수/매도' 라벨과 성적이 표시됩니다.")
+float  unitPct     = input.float(30.0, "1비중(1/3) = 자산의 %", minval = 1.0, maxval = 100.0, step = 1.0, group = G0)
+string stopMode    = input.string("스승님식 (저점 깨질 때만)", "정리 기준", options = ["스승님식 (저점 깨질 때만)", "엄격 (돌파선 이탈)"], group = G0, tooltip = "스승님: 손절을 함부로 남용하시면 안 됩니다. 스승님식은 매수 근거 아래의 저점(자력구간·지지·바닥고점)이 종가로 깨질 때 정리합니다.")
+float  maxLossPct  = input.float(25.0, "최대 허용 손실 %", minval = 3.0, maxval = 90.0, step = 1.0, group = G0)
+bool   useLimitBuy = input.bool(true, "저점 걸어놓기 (X원 이하 매수)", group = G0)
+float  limitGapPct = input.float(3.0, "저점 매수가: 현재가 아래 최소 %", minval = 0.5, step = 0.5, group = G0)
+bool   useChase    = input.bool(true, "재돌파 따라 들어가기·추가", group = G0, tooltip = "스승님: 고점 돌파 이후 고점 밑으로 조정을 받는데 바로 돌파한다, 그럼 따라 들어가도 됩니다.")
+bool   mktCut      = input.bool(true, "시장 흔들릴 때(환율·금 동반 상승) 비중 1 줄이기", group = G0)
+bool   showTrades  = input.bool(true, "스승님 매매 라벨·선 표시", group = G0)
+bool   showPlan    = input.bool(true, "매매 계획선 표시 (매수가·돌파가·목표·매도·저점)", group = G0)
+
+string G1 = "① 매물대 · 사람들이 사고 판 자리"
+float bigPct       = input.float(8.0, "장대봉 기준: 전일대비 등락 %", minval = 1.0, step = 0.5, group = G1)
+float atrMult      = input.float(1.8, "장대봉 기준: 몸통 ≥ ATR ×", minval = 0.5, step = 0.1, group = G1)
+float volMult      = input.float(2.0, "거래량 동반 기준: 20일 평균 ×", minval = 1.0, step = 0.1, group = G1)
+float climaxMult   = input.float(3.0, "거래량 터짐 기준: 20일 평균 ×", minval = 1.5, step = 0.1, group = G1)
+float upperPct     = input.float(29.5, "상한가 기준 %", minval = 5.0, step = 0.5, group = G1)
+float gapMinPct    = input.float(0.5, "갭하락(끊긴 종가) 최소 갭 %", minval = 0.0, step = 0.1, group = G1)
+int   swingLen     = input.int(5, "도망간 자리(전고점) 확인 봉수", minval = 2, maxval = 20, group = G1)
+float swingDropPct = input.float(8.0, "전고점 이후 최소 하락 %", minval = 1.0, step = 0.5, group = G1)
+bool  useListHigh  = input.bool(true, "상장(데이터 시작) 고점 사용", group = G1, tooltip = "차트 데이터가 상장일부터 시작할 때 의미가 있습니다. 스승님: 상장 고점이 가장 큰 매물벽")
+int   listBars     = input.int(60, "상장 고점 산정 봉수", minval = 5, group = G1)
+int   maxZones     = input.int(45, "보관할 최대 매물대 수", minval = 10, maxval = 120, group = G1)
+float mergePct     = input.float(1.0, "겹친 매물대 합치기 허용 %", minval = 0.0, step = 0.1, group = G1)
+float maxThickPct  = input.float(6.0, "합친 매물대 최대 두께 %", minval = 1.0, step = 0.5, group = G1)
+
+string G2 = "② 매수 · 줄 그은데 돌파하고 조정 나오면 산다"
+float pbTolPct     = input.float(3.0, "조정 인정: 돌파선 위 % 이내로 눌림", minval = 0.0, step = 0.5, group = G2)
+float holdTolPct   = input.float(2.0, "버팀 허용: 매물대 아래 % 까지", minval = 0.0, step = 0.5, group = G2)
+bool  needBearPb   = input.bool(true, "음봉·하락봉 조정에서만 매수 (양봉 매수 금지)", group = G2)
+bool  useVolPb     = input.bool(true, "조정 거래량 감소(보유심리) 확인", group = G2)
+float pbVolRatio   = input.float(0.7, "조정 거래량 ≤ 돌파 거래량 ×", minval = 0.1, maxval = 2.0, step = 0.05, group = G2)
+int   maxWait      = input.int(60, "돌파 후 조정 대기 최대 봉수", minval = 5, group = G2)
+int   minStrSig    = input.int(2, "매수 신호 최소 매물대 강도", minval = 1, maxval = 10, group = G2)
+bool  useSupBuy    = input.bool(true, "소화된 매물대(지지) 눌림 매수", group = G2)
+bool  use5Line     = input.bool(true, "신고가 종목 5일선 눌림 매수", group = G2)
+bool  confirmOnly  = input.bool(true, "확정봉(종가)에서만 신호", group = G2)
+
+string G3 = "③ 매도 · 매물대를 보고 매도 가격을 산출한다"
+float  sellPct     = input.float(90.0, "목표 도달률 % (스승님: 90%대 매도)", minval = 50.0, maxval = 100.0, step = 1.0, group = G3)
+string sellBase    = input.string("상승폭", "도달률 기준", options = ["상승폭", "목표가격"], group = G3, tooltip = "상승폭: 매수가→목표 사이의 N% 지점 / 목표가격: 목표가의 N% 가격")
+
+string G4 = "④ 저점 · 기준봉 · 신고가 · 차트 종류"
+int   bottomLen    = input.int(120, "바닥 판정 기간(봉)", minval = 20, group = G4)
+int   springBars   = input.int(3, "저점 이탈 후 복구 허용 봉수", minval = 1, maxval = 10, group = G4)
+int   nhLen        = input.int(250, "신고가 기간(봉) 250≈1년", minval = 20, group = G4)
+int   riseLen      = input.int(750, "바닥대비 상승률 기간(봉)", minval = 50, group = G4)
+float spikePct     = input.float(80.0, "일자 호재 차트: 15봉 안에 상승 %", minval = 30.0, step = 5.0, group = G4)
+float boxPct       = input.float(30.0, "박스권: 60봉 고저 폭 % 이하", minval = 10.0, step = 5.0, group = G4)
+bool  showBottom   = input.bool(true, "바닥·기준봉·바닥고점·저점확인 표시", group = G4)
+bool  showNH       = input.bool(true, "신고가 돌파 표시", group = G4)
+bool  show5        = input.bool(false, "5일선 표시", group = G4)
+
+string G5 = "⑤ 고점 경고 · 갭"
+bool  showWarn     = input.bool(true, "고점 경고 표시 (큰 갭상·고점 상한가·마무리 장대양봉)", group = G5)
+float bigGapPct    = input.float(5.0, "고점 큰 갭상 기준 %", minval = 1.0, step = 0.5, group = G5)
+bool  showGapFill  = input.bool(true, "갭 메꿈 예상선 표시", group = G5)
+float gapUpPct     = input.float(2.0, "갭 메꿈 추적 최소 갭상 %", minval = 0.3, step = 0.1, group = G5)
+
+string G6 = "⑥ 종합시장 · 환율 · 금"
+bool   useMkt      = input.bool(true, "환율·금 신호 사용", group = G6)
+string fxSym       = input.symbol("FX_IDC:USDKRW", "환율 심볼", group = G6)
+string goldSym     = input.symbol("TVC:GOLD", "금 심볼", group = G6)
+bool   useIdx      = input.bool(true, "종합지수 사용", group = G6)
+string idxSym      = input.symbol("KRX:KOSDAQ", "종합지수 심볼", group = G6, tooltip = "트레이딩뷰에서 검색되는 코스피/코스닥 지수 심볼로 바꿔 쓰세요. 잘못된 심볼이면 표에 '심볼 확인'이 뜹니다.")
+
+string G7 = "⑦ 표시"
+bool   showZones   = input.bool(true, "매물대 박스 표시", group = G7)
+bool   showSup     = input.bool(true, "소화된 매물대(지지) 표시", group = G7)
+bool   showEvents  = input.bool(true, "돌파·재돌파·돌파실패 표시", group = G7)
+bool   showSignals = input.bool(false, "매수 신호 라벨도 따로 표시", group = G7, tooltip = "꺼두면 스승님이 실제로 산 자리만 표시됩니다.")
+float  zoneRange   = input.float(60.0, "표시 범위: 현재가 ±%", minval = 5.0, step = 5.0, group = G7)
+float  bossRange   = input.float(60.0, "대장(마지막 매물대) 탐색: 현재가 위 %", minval = 5.0, step = 5.0, group = G7)
+int    extendBars  = input.int(12, "매물대 오른쪽 연장 봉수", minval = 0, maxval = 200, group = G7)
+bool   showTable   = input.bool(true, "스승님 브리핑 표", group = G7)
+bool   tableFull   = input.bool(true, "브리핑 자세히 (끄면 핵심만)", group = G7)
+string tablePos    = input.string("오른쪽 위", "표 위치", options = ["오른쪽 위", "오른쪽 아래", "왼쪽 위", "왼쪽 아래"], group = G7)
+string tableSize   = input.string("작게", "표 글자", options = ["아주 작게", "작게", "보통"], group = G7)
+int    wrapLen     = input.int(32, "스승님 해설 한 줄 글자 수", minval = 12, maxval = 120, group = G7)
+color  resCol      = input.color(#2F6BFF, "매물대(저항)", group = G7)
+color  bossCol     = input.color(#9C27FF, "대장(마지막 매물대)", group = G7)
+color  brkCol      = input.color(#FF9500, "돌파 → 조정 대기", group = G7)
+color  supCol      = input.color(#FF3B30, "소화된 매물대(지지)", group = G7)
+color  baseCol     = input.color(#00A86B, "바닥·바닥에서 올라온 고점", group = G7)
+color  buyCol      = input.color(#FF2D55, "매수", group = G7)
+color  sellCol     = input.color(#1E5BFF, "매도", group = G7)
+color  warnCol     = input.color(#3949AB, "경고", group = G7)
+color  gapCol      = input.color(#8E8E93, "갭 메꿈선", group = G7)
+
+bool useAlertMsg = input.bool(true, "alert() 상세 메시지 보내기", group = "⑧ 알림")
+
+// ───────────────────────── 자료형 ─────────────────────────
+type Zone
+    int    id
+    float  top
+    float  bot
+    float  key
+    int    born
+    int    kind
+    string tags
+    int    strength
+    float  vol
+    bool   maxVol      = false
+    int    state       = 0
+    int    touches     = 0
+    int    brokeBar    = -1
+    float  brokeHigh   = na
+    float  brokeVol    = na
+    bool   pulled      = false
+    int    sigCount    = 0
+    int    supSig      = 0
+    int    lastSigBar  = -1000
+    int    resolvedBar = -1
+    bool   wasBoss     = false
+
+type Pend
+    float top
+    float bot
+    float key
+    int   born
+    int   kind
+    int   strength
+    float vol
+    bool  maxVol = false
+    float trig
+    int   expire
+
+type Gap
+    int   bar
+    float mid
+    bool  filled = false
+    line  ln
+
+// ───────────────────────── 함수 ─────────────────────────
+kindName(int k) =>
+    switch k
+        1 => "힘쓴자리 밀림"
+        2 => "하락중 양봉"
+        3 => "갭하락·끊긴종가"
+        4 => "도망간 자리"
+        5 => "장대음봉 센타"
+        6 => "거래량 터진 자리"
+        7 => "상장 고점"
+        8 => "바닥에서 올라온 고점"
+        9 => "갭상 무꼬리 음봉"
+        10 => "장대음봉 시가"
+        11 => "윗꼬리 도망"
+        => "매물대"
+
+kindPri(int k) =>
+    switch k
+        8 => 8
+        7 => 7
+        6 => 6
+        10 => 6
+        1 => 5
+        3 => 4
+        11 => 4
+        5 => 3
+        9 => 3
+        2 => 2
+        => 1
+
+fp(float v) =>
+    str.tostring(v, format.mintick)
+
+sgn(float v) =>
+    (v >= 0 ? "+" : "") + str.tostring(v, "#.#")
+
+// 매물대 추가: 겹치면 합친다 (매물대는 서로 연결고리처럼 엮여 있다)
+addZone(array<Zone> zs, int id, float top, float bot, float key, int born, int kind, int strength, float vol, bool mx, float mergeTol, float maxThick, int maxN) =>
+    float t = math.max(top, bot)
+    float b = math.min(top, bot)
+    float minT = math.max(t * 0.003, syminfo.mintick * 2)
+    if t - b < minT
+        b := t - minT
+    float k = math.min(math.max(key, b), t)
+    bool merged = false
+    int n = zs.size()
+    if n > 0
+        for i = 0 to n - 1
+            Zone z = zs.get(i)
+            if z.state == 0
+                float tol = z.key * mergeTol / 100.0
+                float nt = math.max(z.top, t)
+                float nb = math.min(z.bot, b)
+                if b <= z.top + tol and t >= z.bot - tol and (nt - nb) <= nt * maxThick / 100.0
+                    float w1 = float(z.strength)
+                    float w2 = float(strength)
+                    z.key := (z.key * w1 + k * w2) / (w1 + w2)
+                    z.top := nt
+                    z.bot := nb
+                    z.strength := math.min(z.strength + strength, 12)
+                    z.vol := math.max(nz(z.vol), nz(vol))
+                    z.maxVol := z.maxVol or mx
+                    if kindPri(kind) > kindPri(z.kind)
+                        z.kind := kind
+                    string nm = kindName(kind)
+                    if not str.contains(z.tags, nm)
+                        z.tags := z.tags + "+" + nm
+                    z.born := math.min(z.born, born)
+                    merged := true
+                    break
+    if not merged
+        zs.push(Zone.new(id = id, top = t, bot = b, key = k, born = born, kind = kind, tags = kindName(kind), strength = strength, vol = vol, maxVol = mx))
+    if zs.size() > maxN
+        int rem = -1
+        int best = 2147483647
+        for j = 0 to zs.size() - 1
+            Zone q = zs.get(j)
+            int sc = (q.state == 3 ? 0 : 100000000) + q.strength * 1000000 + q.born
+            if sc < best
+                best := sc
+                rem := j
+        if rem >= 0
+            zs.remove(rem)
+    merged
+
+// 위로 가장 가까운 매물대 (목표): 다음 매물대까지는 갈 수 있다
+nextAbove(array<Zone> zs, float lvl, int exclId) =>
+    float best = na
+    if zs.size() > 0
+        for z in zs
+            if z.state == 0 and z.id != exclId and z.bot > lvl
+                if na(best) or z.bot < best
+                    best := z.bot
+    best
+
+// 아래로 가장 가까운 저점 (지지·자력구간·바닥고점·바닥)
+floorBelow(array<Zone> zs, float lvl, float c1, float c2, float c3) =>
+    float best = na
+    if zs.size() > 0
+        for z in zs
+            if z.state == 3 and z.top < lvl
+                if na(best) or z.top > best
+                    best := z.top
+    if not na(c1) and c1 < lvl and (na(best) or c1 > best)
+        best := c1
+    if not na(c2) and c2 < lvl and (na(best) or c2 > best)
+        best := c2
+    if not na(c3) and c3 < lvl and (na(best) or c3 > best)
+        best := c3
+    best
+
+// 매도선: 목표(다음 매물대)의 90%
+sellLevel(float entry, float tgt, float pct, string base) =>
+    float s = na
+    if not na(tgt) and not na(entry)
+        float byMove = entry + (tgt - entry) * pct / 100.0
+        float byPrice = tgt * pct / 100.0
+        s := base == "상승폭" ? byMove : (byPrice > entry * 1.01 ? byPrice : byMove)
+    s
+
+// 표 안에서 읽기 좋게 줄 바꾸기
+wrapTx(string s, int n) =>
+    array<string> ws = str.split(s, " ")
+    string out = ""
+    int cur = 0
+    for w in ws
+        int len = str.length(w)
+        if cur > 0 and cur + 1 + len > n
+            out := out + "\n" + w
+            cur := len
+        else
+            out := out + (cur > 0 ? " " : "") + w
+            cur := cur + (cur > 0 ? 1 : 0) + len
+    out
+
+ctName(int t) =>
+    switch t
+        1 => "단물 빠진 차트"
+        2 => "일자 호재 차트"
+        3 => "하락중 (떨어지는 칼날)"
+        4 => "저점 미확인"
+        5 => "보유자 영역"
+        6 => "대장 돌파 → 조정 대기"
+        7 => "신고가 · 위 매물 없음"
+        8 => "매물 소화중"
+        9 => "박스권"
+        10 => "상단 올라탄 차트"
+        => "중간 · 위 매물 향해 가는 중"
+
+ctStance(int t) =>
+    switch t
+        1 => "쳐다보지 마라"
+        2 => "쳐다보지 마라 (최고점 돌파 전)"
+        3 => "기다려라 — 저점 확인 전"
+        4 => "기다려라 — 저점 확인 전"
+        5 => "보유 관점 · 신규 진입 반대"
+        6 => "매수 준비 — 조정 기다림"
+        7 => "보유 관점 · 5일선 매매"
+        8 => "지켜보기 — 돌파 후 조정에서"
+        9 => "단타 대응"
+        10 => "저점 매수 대기 · 보유 관점"
+        => "지켜보기"
+
+// ───────────────────────── 기본 계산 (일봉 심리) ─────────────────────────
+float atr      = ta.atr(20)
+float atrN     = nz(atr, high - low)
+float avgVol   = ta.sma(volume, 20)
+float volX     = nz(avgVol) > 0 ? volume / avgVol : 1.0
+float body     = math.abs(close - open)
+float rng      = math.max(high - low, syminfo.mintick)
+float bTop     = math.max(open, close)
+float bBot     = math.min(open, close)
+float upWick   = high - bTop
+float loWick   = bBot - low
+float prevC    = nz(close[1], open)
+float chg      = prevC > 0 ? (close / prevC - 1.0) * 100.0 : 0.0
+float gapPct   = prevC > 0 ? (open / prevC - 1.0) * 100.0 : 0.0
+bool  isBull   = close > open
+bool  isBear   = close < open
+bool  isUpper  = chg >= upperPct
+bool  isBigBull = isBull and (body >= atrMult * atrN or chg >= bigPct)
+bool  isBigBear = isBear and (body >= atrMult * atrN or chg <= -bigPct)
+bool  isPower  = isUpper or (isBigBull and volX >= volMult) or (isBigBull and chg >= bigPct * 1.5)
+bool  isClimax = volX >= climaxMult
+float hiVol250 = ta.highest(volume, 250)
+bool  isMaxVolBar = not na(hiVol250) and volume >= hiVol250 and isClimax
+bool  isBullBody = isBull and body >= 0.4 * atrN
+float ema20    = ta.ema(close, 20)
+bool  downCtx  = close < ema20 and ema20 < nz(ema20[3], ema20)
+bool  declBull = isBull and body >= 0.6 * atrN and downCtx[1]
+float sma5     = ta.sma(close, 5)
+bool  longUpWick = upWick >= 0.4 * rng and rng >= 0.8 * atrN
+
+int   nhL      = math.max(1, math.min(bar_index + 1, nhLen))
+float hhN      = ta.highest(high, nhL)
+float hhPrev   = hhN[1]
+bool  brkNH    = not na(hhPrev) and close > hhPrev and bar_index >= 20
+int   bsNH     = ta.barssince(brkNH)
+int   riseL    = math.max(1, math.min(bar_index + 1, riseLen))
+float lowRise  = ta.lowest(low, riseL)
+float riseLow  = nz(lowRise) > 0 ? (close / lowRise - 1.0) * 100.0 : 0.0
+float hhRise   = ta.highest(high, riseL)
+float lo20     = ta.lowest(low, 20)
+float rise20   = nz(lo20) > 0 ? (close / lo20 - 1.0) * 100.0 : 0.0
+int   bsLow20  = ta.barssince(low <= lo20)
+float hh60     = ta.highest(high, 60)
+float ll60     = ta.lowest(low, 60)
+int   hhOff60  = ta.highestbars(high, 60)
+float hi15     = ta.highest(high, 15)
+float lo15     = ta.lowest(low, 15)
+bool  spikeNow = bar_index >= 15 and nz(lo15) > 0 and (hi15 / lo15 - 1.0) * 100.0 >= spikePct
+
+float phS      = ta.pivothigh(high, swingLen, swingLen)
+float plS      = ta.pivotlow(low, 10, 3)
+float plMaj    = ta.pivotlow(low, 20, 5)
+int   botL     = math.max(1, math.min(bar_index + 1, bottomLen + 6))
+float lowWin   = ta.lowest(low, botL)
+bool  majorBottom = not na(plMaj) and not na(lowWin) and plMaj <= lowWin
+
+float hhList   = ta.highest(high, listBars)
+int   hbList   = ta.highestbars(high, listBars)
+
+int   bsClimax = ta.barssince(isClimax)
+float climaxV  = ta.valuewhen(isClimax, volume, 0)
+float climaxL  = ta.valuewhen(isClimax, low, 0)
+float vol3     = ta.sma(volume, 3)
+bool  holdPsy  = not na(bsClimax) and bsClimax > 0 and bsClimax <= 15 and nz(climaxV) > 0 and vol3 <= climaxV * 0.5 and close >= nz(climaxL)
+
+bool  nearHigh   = not na(hhPrev) and close >= hhPrev * 0.92
+bool  warnUpper  = isUpper and (nearHigh or riseLow >= 100)
+bool  warnGap    = gapPct >= bigGapPct and (nearHigh or rise20 >= 30)
+bool  warnClimax = isBigBull and volX >= climaxMult and riseLow >= 150 and nearHigh
+bool  warnAny    = warnUpper or warnGap or warnClimax
+int   bsWarn     = ta.barssince(warnAny)
+
+bool confOK = not confirmOnly or barstate.isconfirmed
+
+// ───────────────────────── 종합시장 · 환율 · 금 ─────────────────────────
+float fxC = request.security(fxSym, timeframe.period, close, ignore_invalid_symbol = true)
+float gdC = request.security(goldSym, timeframe.period, close, ignore_invalid_symbol = true)
+[ixC, ixO] = request.security(idxSym, timeframe.period, [close, open], ignore_invalid_symbol = true)
+float fxChg = not na(fxC) and not na(fxC[20]) and fxC[20] > 0 ? (fxC / fxC[20] - 1.0) * 100.0 : na
+float gdChg = not na(gdC) and not na(gdC[20]) and gdC[20] > 0 ? (gdC / gdC[20] - 1.0) * 100.0 : na
+float ixChg = not na(ixC) and not na(ixC[20]) and ixC[20] > 0 ? (ixC / ixC[20] - 1.0) * 100.0 : na
+bool  mktShaky = useMkt and not na(fxChg) and not na(gdChg) and fxChg >= 1.5 and gdChg >= 2.0
+
+// ───────────────────────── 상태 저장 ─────────────────────────
+var array<Zone>  zones  = array.new<Zone>()
+var array<Pend>  pends  = array.new<Pend>()
+var array<Gap>   gaps   = array.new<Gap>()
+var int   zid          = 0
+var int   prevBossId   = -1
+var int   lastBossDigest = -100000
+var int   lastDigest   = -100000
+var float botPrice     = na
+var int   botBar       = -1
+var bool  waitBase     = false
+var bool  waitKijun    = false
+var float baseHigh     = na
+var int   baseBar      = -1
+var float lowLine      = na
+var int   lowLineBar   = -1
+var int   brkLowBar    = -1
+var float brkLowLvl    = na
+var int   lastSpringBar = -100000
+var float springLine   = na
+var int   last5Bar     = -100000
+var int   lastBuyBar   = -100000
+var float spikeTop     = na
+var int   spikeBar     = -100000
+var int   spikeBrkBar  = -100000
+
+bool sigBuyAny    = false
+bool sigBuyStrong = false
+bool sigRebreak   = false
+bool sigSpring    = false
+bool sig5         = false
+string alertMsg   = ""
+
+// ───────────────────────── 1) 매물대 상태 변화: 찌름 · 돌파 · 조정 · 재돌파 · 이탈 ─────────────────────────
+Zone buyZ    = na
+float buyBest = -1.0
+bool buyIsSup = false
+bool buyTenth = false
+Zone brkZ    = na
+Zone failZ   = na
+Zone rbZ     = na
+Zone supBrkZ = na
+bool pbShape = needBearPb ? (close < open or close < prevC) : true
+
+if zones.size() > 0
+    for z in zones
+        if z.state == 0
+            if close > z.top
+                z.state := 1
+                z.brokeBar := bar_index
+                z.brokeHigh := high
+                z.brokeVol := volume
+                z.pulled := false
+                z.wasBoss := z.id == prevBossId
+                if na(brkZ) or z.strength > brkZ.strength or z.wasBoss
+                    brkZ := z
+            else if high > z.top
+                z.touches += 1
+        else if z.state == 1 or z.state == 2
+            if close < z.bot * (1.0 - holdTolPct / 100.0)
+                z.state := 0
+                z.touches += 1
+                z.pulled := false
+                z.brokeBar := -1
+                if na(failZ) or z.strength > failZ.strength
+                    failZ := z
+            else if bar_index > z.brokeBar and pbShape and low <= z.top * (1.0 + pbTolPct / 100.0)
+                z.pulled := true
+                z.state := 2
+                bool volGood = not useVolPb or na(z.brokeVol) or z.brokeVol <= 0 or volume <= z.brokeVol * pbVolRatio
+                bool tenth = (nz(z.brokeVol) > 0 and volume <= z.brokeVol * 0.1) or (nz(z.vol) > 0 and volume <= z.vol * 0.1)
+                if confOK and volGood and z.sigCount < 2 and z.strength >= minStrSig and bar_index - z.lastSigBar > 5
+                    z.sigCount += 1
+                    z.lastSigBar := bar_index
+                    float sc = (z.wasBoss ? 100.0 : 0.0) + (z.maxVol ? 50.0 : 0.0) + (z.kind == 7 ? 40.0 : 0.0) + (z.kind == 8 ? 30.0 : 0.0) + (tenth ? 20.0 : 0.0) + float(z.strength)
+                    if sc > buyBest
+                        buyBest := sc
+                        buyZ := z
+                        buyIsSup := false
+                        buyTenth := tenth
+            else if z.pulled and close > z.brokeHigh
+                z.state := 3
+                z.resolvedBar := bar_index
+                lastDigest := z.strength >= 3 ? bar_index : lastDigest
+                if z.wasBoss
+                    lastBossDigest := bar_index
+                if na(rbZ) or z.strength > rbZ.strength
+                    rbZ := z
+            else if bar_index - z.brokeBar > (z.pulled ? maxWait * 2 : maxWait)
+                z.state := 3
+                z.resolvedBar := bar_index
+                lastDigest := z.strength >= 3 ? bar_index : lastDigest
+                if z.wasBoss
+                    lastBossDigest := bar_index
+        else if z.state == 3
+            if close < z.bot * (1.0 - holdTolPct / 100.0)
+                z.state := 0
+                z.touches := 0
+                z.pulled := false
+                z.brokeBar := -1
+                z.resolvedBar := -1
+                if na(supBrkZ) or z.strength > supBrkZ.strength
+                    supBrkZ := z
+            else if useSupBuy and confOK and pbShape and low <= z.top * (1.0 + pbTolPct / 100.0) and z.supSig < 2 and bar_index - z.lastSigBar > 10 and volX <= 1.0 and (z.kind == 8 or z.kind == 7 or z.wasBoss or z.maxVol or z.strength >= 4)
+                z.supSig += 1
+                z.lastSigBar := bar_index
+                float sc2 = (z.wasBoss ? 60.0 : 0.0) + (z.maxVol ? 30.0 : 0.0) + (z.kind == 8 ? 25.0 : 0.0) + float(z.strength) - 20.0
+                if sc2 > buyBest
+                    buyBest := sc2
+                    buyZ := z
+                    buyIsSup := true
+                    buyTenth := false
+
+// ───────────────────────── 2) 대기중인 매물대 확정 (힘쓴 자리가 밀리면 매물대) ─────────────────────────
+if pends.size() > 0
+    for i = pends.size() - 1 to 0
+        Pend p = pends.get(i)
+        if bar_index > p.born and close < p.trig
+            zid += 1
+            addZone(zones, zid, p.top, p.bot, p.key, p.born, p.kind, p.strength, p.vol, p.maxVol, mergePct, maxThickPct, maxZones)
+            pends.remove(i)
+        else if bar_index > p.expire
+            pends.remove(i)
+
+// ───────────────────────── 3) 새 매물대 만들기 ─────────────────────────
+// (3) 갭하락 · 끊긴 종가: 전일 종가를 연결 못 시키면 매물대
+if prevC > 0 and high < prevC
+    float gp = (prevC - high) / prevC * 100.0
+    if gp >= gapMinPct
+        int st3 = 1 + (gp >= 2.0 ? 1 : 0) + (volX >= volMult ? 1 : 0) + (open >= high - syminfo.mintick ? 1 : 0)
+        zid += 1
+        addZone(zones, zid, prevC, high, prevC, bar_index - 1, 3, st3, volume, false, mergePct, maxThickPct, maxZones)
+
+// (5) 장대음봉 센타 = 매물대 ("-10% 음봉이면 가운데 5% 자리")
+if isBigBear
+    float ctr5 = (open + close) / 2.0
+    zid += 1
+    addZone(zones, zid, ctr5 + 0.25 * body, ctr5 - 0.1 * body, ctr5, bar_index, 5, 2 + (volX >= volMult ? 1 : 0), volume, isMaxVolBar, mergePct, maxThickPct, maxZones)
+    // (10) 거래량 동반 장대음봉의 시가 = 진짜 매물대 (돌파하면 악재 해소)
+    if volX >= volMult
+        zid += 1
+        addZone(zones, zid, open, open - math.max(0.2 * body, 0.3 * atrN), open, bar_index, 10, 3, volume, isMaxVolBar, mergePct, maxThickPct, maxZones)
+
+// (9) 갭상 무꼬리 음봉 = 시작부터 '안 산다' 매물 (센타가 매물)
+if isBear and gapPct >= 1.0 and open >= high - syminfo.mintick and not isBigBear
+    zid += 1
+    addZone(zones, zid, open, (open + close) / 2.0, (open + close) / 2.0, bar_index, 9, 2 + (volX >= volMult ? 1 : 0), volume, false, mergePct, maxThickPct, maxZones)
+
+// (11) 윗꼬리: 다음날 바로 공격 안 하면 윗꼬리 센타가 도망간 자리 = 매물대
+if bar_index > 0 and longUpWick[1] and not isPower[1] and high < high[1]
+    float bt11 = math.max(open[1], close[1])
+    zid += 1
+    addZone(zones, zid, high[1], bt11, (high[1] + bt11) / 2.0, bar_index - 1, 11, 2 + (volume[1] >= nz(avgVol[1]) * volMult ? 1 : 0), volume[1], false, mergePct, maxThickPct, maxZones)
+
+// (6) 거래량 터진 자리 = 저항값 (최대 거래량 자리는 특별 관리)
+if isClimax
+    float t6 = high
+    float b6 = high - math.max(0.3 * atrN, 0.25 * body)
+    float k6 = high
+    if isBull or close == open
+        if upWick >= 0.25 * rng
+            b6 := bTop
+            k6 := (high + bTop) / 2.0
+    else
+        t6 := (high + bTop) / 2.0
+        b6 := (open + close) / 2.0
+        k6 := (open + close) / 2.0
+    zid += 1
+    addZone(zones, zid, t6, b6, k6, bar_index, 6, 3 + (isMaxVolBar ? 2 : 0), volume, isMaxVolBar, mergePct, maxThickPct, maxZones)
+
+// (1) 힘쓴 자리(장대양봉·상한가·쩜상): 몸통 절반 밑으로 밀리면 매물대 확정
+if isPower
+    bool w1 = upWick >= 0.25 * rng and upWick > 0
+    float k1 = w1 ? (high + bTop) / 2.0 : high
+    float b1 = w1 ? bTop : high - math.max(0.25 * body, 0.3 * atrN)
+    int st1 = 3 + (isUpper ? 1 : 0) + (volX >= climaxMult ? 1 : 0)
+    pends.push(Pend.new(top = high, bot = b1, key = k1, born = bar_index, kind = 1, strength = st1, vol = volume, maxVol = isMaxVolBar, trig = open + 0.5 * (close - open), expire = bar_index + 60))
+
+// (2) 떨어지다 나온 양봉: 그 양봉 밑으로 빠지면(싸움에서 지면) 매물대
+if declBull and not isPower
+    bool w2 = upWick >= 0.25 * rng
+    float k2 = w2 ? (high + bTop) / 2.0 : high
+    pends.push(Pend.new(top = high, bot = (open + close) / 2.0, key = k2, born = bar_index, kind = 2, strength = 2, vol = volume, maxVol = false, trig = low, expire = bar_index + 40))
+
+// (4) 찌르고 도망간 자리(전고점): 고점 이후 충분히 밀리면 매물대
+if not na(phS)
+    int o4 = swingLen
+    float pbt = math.max(open[o4], close[o4])
+    float prng = math.max(high[o4] - low[o4], syminfo.mintick)
+    bool w4 = (phS - pbt) >= 0.25 * prng
+    float k4 = w4 ? (phS + pbt) / 2.0 : phS
+    float b4 = w4 ? pbt : phS - 0.3 * atrN
+    bool majorH = not na(hhN) and phS >= hhN
+    int st4 = 1 + (volume[o4] >= nz(avgVol[o4]) * volMult ? 1 : 0) + (w4 ? 1 : 0) + (majorH ? 2 : 0)
+    pends.push(Pend.new(top = phS, bot = b4, key = k4, born = bar_index - o4, kind = 4, strength = st4, vol = volume[o4], maxVol = false, trig = phS * (1.0 - swingDropPct / 100.0), expire = bar_index + 80))
+
+if pends.size() > 80
+    pends.shift()
+
+// (7) 상장(데이터 시작) 고점 = 가장 큰 매물벽
+if useListHigh and bar_index == listBars - 1 and not na(hhList)
+    int ob = -hbList
+    float lbt = math.max(open[ob], close[ob])
+    zid += 1
+    addZone(zones, zid, hhList, hhList - math.max(0.3 * atrN, (hhList - lbt) * 0.5), hhList, bar_index - ob, 7, 4, volume[ob], false, mergePct, maxThickPct, maxZones)
+
+// ───────────────────────── 4) 바닥 · 기준봉 · 바닥에서 올라온 고점 ─────────────────────────
+if majorBottom
+    botPrice := plMaj
+    botBar := bar_index - 5
+    waitBase := true
+    waitKijun := true
+    if showBottom
+        label.new(botBar, plMaj, "바닥", yloc = yloc.belowbar, style = label.style_label_up, color = color.new(baseCol, 10), textcolor = color.white, size = size.tiny, tooltip = "최근 " + str.tostring(bottomLen) + "봉 최저점 (바닥)\n스승님: 바닥을 찍고 밑에서 거래량을 동반해 올라오면 '시작'입니다.\n종목들이 저점을 찍으면 개인들에게 저점 매수 기회를 안 주고 빠르게 올라갑니다.")
+    for j = 5 to 0
+        if waitKijun and isPower[j]
+            if showBottom
+                label.new(bar_index - j, high[j], "기준봉", yloc = yloc.abovebar, style = label.style_label_down, color = color.new(baseCol, 0), textcolor = color.white, size = size.small, tooltip = "바닥에서 올라온 진봉(기준봉)\n스승님: 차트가 아무리 달라도 기준봉을 중심으로 읽어야 항상 똑같은 관점으로 읽을 수 있습니다.")
+            waitKijun := false
+else if waitKijun
+    if bar_index - botBar > 40
+        waitKijun := false
+    else if isPower
+        if showBottom
+            label.new(bar_index, high, "기준봉", yloc = yloc.abovebar, style = label.style_label_down, color = color.new(baseCol, 0), textcolor = color.white, size = size.small, tooltip = "바닥에서 올라온 진봉(기준봉)\n스승님: 하단에서 거래량 동반 양봉이 나오면 기준점이 확실해집니다. 거래량은 돈이 들어온 모습이니까요.")
+        waitKijun := false
+
+if waitBase and not na(phS) and bar_index - swingLen > botBar
+    int o8 = swingLen
+    float pbt8 = math.max(open[o8], close[o8])
+    float b8 = phS - math.max(0.3 * atrN, (phS - pbt8) * 0.6)
+    zid += 1
+    addZone(zones, zid, phS, b8, phS, bar_index - o8, 8, 3, volume[o8], false, mergePct, maxThickPct, maxZones)
+    baseHigh := phS
+    baseBar := bar_index - o8
+    waitBase := false
+    if showBottom
+        label.new(baseBar, phS, "바닥고점", yloc = yloc.abovebar, style = label.style_label_down, color = color.new(baseCol, 30), textcolor = color.white, size = size.tiny, tooltip = "바닥에서 올라온 고점 " + fp(phS) + "\n스승님: 바닥에서 올라온 고점에 줄을 그어보세요. 그 밑으로 빠진 구간이 과매도 구간입니다.\n그 고점을 뚫어주고 다시 조정을 보여야 연속성이 있습니다.")
+
+// ───────────────────────── 5) 저점 확인: 그 밑으로 빠져도 바로 복구하는 자리 ─────────────────────────
+if not na(plS)
+    lowLine := plS
+    lowLineBar := bar_index - 3
+    brkLowBar := -1
+bool springNow = false
+float springLvl = na
+if not na(lowLine) and bar_index > lowLineBar + 3
+    if brkLowBar < 0
+        if low < lowLine and close >= lowLine
+            springNow := true
+            springLvl := lowLine
+        else if close < lowLine
+            brkLowBar := bar_index
+            brkLowLvl := lowLine
+    else
+        if close > brkLowLvl
+            if bar_index - brkLowBar <= springBars
+                springNow := true
+                springLvl := brkLowLvl
+            brkLowBar := -1
+        else if bar_index - brkLowBar > springBars
+            brkLowBar := -1
+            lowLine := na
+if springNow and bar_index - lastSpringBar > 10 and confOK
+    lastSpringBar := bar_index
+    springLine := springLvl
+    sigSpring := true
+    if showBottom
+        label.new(bar_index, low, "저점확인", yloc = yloc.belowbar, style = label.style_label_up, color = color.new(#FF6F00, 0), textcolor = color.white, size = size.small, tooltip = "저점선 " + fp(springLvl) + " 이탈 후 바로 복구\n스승님: 저점에서 어느 기준가 밑으로 내려가면 바로 상승해주는 자리, 그 자리가 바로 자력으로 올라온 자리입니다.")
+    alertMsg := alertMsg + "저점확인 " + fp(close) + " / "
+if not na(springLine) and close < springLine * (1.0 - holdTolPct / 100.0) and bar_index - lastSpringBar > springBars
+    springLine := na
+
+// ───────────────────────── 6) 갭 메꿈: 갭을 띄우면 99% 메꾼다 ─────────────────────────
+if gaps.size() > 0
+    for g in gaps
+        if not g.filled
+            if bar_index > g.bar and low <= g.mid
+                g.filled := true
+                line.set_x2(g.ln, bar_index)
+                line.set_color(g.ln, color.new(gapCol, 75))
+            else
+                line.set_x2(g.ln, bar_index + 3)
+if showGapFill and bar_index > 0 and nz(high[1]) > 0 and low > high[1] and (low / high[1] - 1.0) * 100.0 >= gapUpPct
+    float gmid = (low + high[1]) / 2.0
+    gaps.push(Gap.new(bar = bar_index, mid = gmid, ln = line.new(bar_index, gmid, bar_index + 3, gmid, color = gapCol, style = line.style_dashed, width = 1)))
+    if gaps.size() > 10
+        Gap og = gaps.shift()
+        line.delete(og.ln)
+
+// ───────────────────────── 7) 고점 경고 · 신고가 · 일자 호재 ─────────────────────────
+if showWarn and warnAny and confOK
+    string wt = warnUpper ? "고점 상한가\n끝 신호" : warnGap ? "고점 큰갭상\n던져라" : "상단 장대양봉\n마무리?"
+    string wtip = warnUpper ? "고점 상단의 상한가\n스승님: 상한가는 시작과 끝을 알리는 신호. 최고점 가장 높은 자리 상한가는 마무리, 팔 준비.\n고점에서는 상한가보다 잘게 잘게 썰어서 보유심리를 보이며 오르는 게 좋습니다." : warnGap ? "고점에서 크게 갭상 (" + sgn(gapPct) + "%)\n스승님: 최고점에서는 갭을 크게 띄우면 보유자들이 도망갑니다. 후다닥 팔고 도망.\n갭을 띄우면 99% 메꿉니다." : "오래 오른 뒤 상단에서 거래량 터진 장대양봉\n스승님: 장대양봉은 시작을 알리지만 마무리 의미도 있습니다."
+    label.new(bar_index, high, wt, yloc = yloc.abovebar, style = label.style_label_down, color = warnCol, textcolor = color.white, size = size.small, tooltip = wtip)
+    alertMsg := alertMsg + str.replace_all(wt, "\n", " ") + " / "
+
+if showNH and brkNH and (na(bsNH[1]) or bsNH[1] > 20) and confOK
+    label.new(bar_index, high, "신고가", yloc = yloc.abovebar, style = label.style_label_down, color = color.new(#E53935, 20), textcolor = color.white, size = size.tiny, tooltip = str.tostring(nhLen) + "봉 신고가 돌파\n스승님: 제가 매매하는 기법은 신고가 차트입니다. 신고가는 회사 가치가 올라간다는 잣대.\n단, 고점을 돌파하면 조정은 받습니다. 돌파 후 조정에서 보세요.")
+
+if use5Line and not na(bsNH) and bsNH > 0 and bsNH <= 10 and isBear and low <= sma5 and close >= sma5 * 0.98 and riseLow < 500 and bar_index - last5Bar > 10 and confOK
+    last5Bar := bar_index
+    sig5 := true
+    if showSignals
+        label.new(bar_index, low, "신고가 눌림\n5일선", yloc = yloc.belowbar, style = label.style_label_up, color = color.new(buyCol, 35), textcolor = color.white, size = size.tiny, tooltip = "신고가 돌파 후 첫 음봉 조정이 5일선에 닿음\n스승님: 신고가 종목은 5일선 매매. 절대 양봉에서 매수하지 말자.")
+    alertMsg := alertMsg + "신고가 5일선 눌림 " + fp(close) + " / "
+
+// 일자 호재 차트: 최저점과 최고점이 하나의 봉처럼 단숨에 연결
+if spikeNow and bar_index - spikeBrkBar > 15
+    if na(spikeTop) or bar_index - spikeBar > 15
+        spikeTop := hi15
+    else
+        spikeTop := math.max(spikeTop, hi15)
+    spikeBar := bar_index
+if not na(spikeTop) and bar_index > spikeBar and close > spikeTop
+    spikeTop := na
+    spikeBrkBar := bar_index
+    if showEvents and confOK
+        label.new(bar_index, high, "호재 고점\n돌파", yloc = yloc.abovebar, style = label.style_label_down, color = color.new(#E53935, 10), textcolor = color.white, size = size.tiny, tooltip = "일자로 올라왔던 호재 고점을 돌파\n스승님: 그 고점을 뚫어줘야 비로소 다시 성장성 기대감이 생기는 겁니다. 돌파 후 조정에서 보세요.")
+if not na(spikeTop) and bar_index - spikeBar > 250
+    spikeTop := na
+
+// ───────────────────────── 8) 대장(마지막 매물대) · 첫 관문 · 지지 · 저점 매수가 ─────────────────────────
+int   bossId   = -1
+float bossSc   = -1.0
+float bossTop  = 0.0
+Zone  bossZ    = na
+Zone  nextZ    = na
+Zone  supZ     = na
+Zone  waitZ    = na
+int   nOver    = 0
+float overStr  = 0.0
+if zones.size() > 0
+    for z in zones
+        if z.state == 0 and z.top > close
+            float dist = (z.bot / close - 1.0) * 100.0
+            if dist <= bossRange
+                float scB = float(z.strength) + (z.maxVol ? 3.0 : 0.0) + (z.kind == 7 or z.kind == 8 ? 2.0 : 0.0) - (z.touches >= 2 ? 1.0 : 0.0)
+                if scB > bossSc or (scB == bossSc and z.top > bossTop)
+                    bossSc := scB
+                    bossTop := z.top
+                    bossId := z.id
+                    bossZ := z
+            if na(nextZ) or z.bot < nextZ.bot
+                nextZ := z
+            if z.bot <= close * 1.25
+                nOver += 1
+                overStr += (z.touches >= 2 ? 0.5 : 1.0) * float(z.strength)
+        if z.state != 0 and z.top <= close * (1.0 + pbTolPct / 100.0)
+            if na(supZ) or z.top > supZ.top
+                supZ := z
+        if (z.state == 1 or z.state == 2) and (z.wasBoss or z.maxVol or z.strength >= 4) and bar_index - z.brokeBar <= maxWait
+            if na(waitZ) or (z.wasBoss and not waitZ.wasBoss) or z.strength > waitZ.strength
+                waitZ := z
+prevBossId := bossId
+
+bool  springOK = not na(springLine) and bar_index - lastSpringBar <= 120
+float lowBuy   = floorBelow(zones, close * (1.0 - limitGapPct / 100.0), not na(baseHigh) and bar_index - baseBar > 10 ? baseHigh : na, springOK ? springLine : na, na)
+if not na(lowBuy) and not na(botPrice) and lowBuy < botPrice
+    lowBuy := na
+
+// ───────────────────────── 9) 차트 종류 · 스승님 입장 ─────────────────────────
+bool  nearNH   = not na(hhN) and close >= hhN * 0.97
+bool  spikeAct = not na(spikeTop) and close < spikeTop
+bool  falling  = not na(hh60) and close <= hh60 * 0.75 and not na(bsLow20) and bsLow20 <= 3
+bool  noLow    = not na(botPrice) and close <= botPrice * 1.2 and bar_index - lastSpringBar > 60 and (na(baseHigh) or close < baseHigh)
+bool  boxNow   = bar_index >= 60 and nz(ll60) > 0 and (hh60 / ll60 - 1.0) * 100.0 <= boxPct and not nearNH
+bool  inZone   = not na(nextZ) and nextZ.bot <= close * 1.03
+bool  chartMade = bar_index - lastDigest <= 250 or (not na(baseHigh) and close > baseHigh and bar_index - baseBar > 10)
+int   ctype = 11
+if riseLow >= 500
+    ctype := 1
+else if spikeAct
+    ctype := 2
+else if falling
+    ctype := 3
+else if noLow
+    ctype := 4
+else if riseLow >= 300 and nearNH
+    ctype := 5
+else if not na(waitZ)
+    ctype := 6
+else if nearNH and nOver == 0
+    ctype := 7
+else if inZone
+    ctype := 8
+else if boxNow
+    ctype := 9
+else if nOver == 0 and chartMade
+    ctype := 10
+bool tradeOK = ctype != 1 and ctype != 2 and ctype != 5
+
+// ───────────────────────── 10) 돌파 · 재돌파 · 돌파실패 표시 ─────────────────────────
+if showEvents and confOK
+    if not na(brkZ) and (brkZ.strength >= 3 or brkZ.wasBoss or brkZ.maxVol)
+        bool firstHit = brkZ.touches == 0 and isPower
+        string bt = brkZ.wasBoss ? "대장 돌파" : brkZ.maxVol ? "최대거래량\n자리 돌파" : brkZ.kind == 10 ? "악재 해소\n(음봉 시가 돌파)" : "돌파"
+        label.new(bar_index, high, bt, yloc = yloc.abovebar, style = label.style_label_down, color = color.new(brkCol, brkZ.wasBoss ? 0 : 25), textcolor = color.white, size = size.tiny, tooltip = "매물대 돌파: " + brkZ.tags + " " + fp(brkZ.key) + " (강도 " + str.tostring(brkZ.strength) + ", 찌름 " + str.tostring(brkZ.touches) + ")\n스승님: 매물대를 만나면 돌파를 해도 한번 더 조정을 받는 경우가 90% 이상 나옵니다.\n" + (firstHit ? "호재봉이 매물대를 처음 공격하면 밀립니다. 조정 기다리세요." : "돌파하는 양봉을 따라가면 본인이 선발대가 됩니다. 조정을 기다리세요."))
+    if not na(rbZ)
+        sigRebreak := true
+        label.new(bar_index, high, "재돌파", yloc = yloc.abovebar, style = label.style_label_down, color = color.new(supCol, 15), textcolor = color.white, size = size.tiny, tooltip = "돌파 → 조정 → 재돌파: " + rbZ.tags + " " + fp(rbZ.key) + "\n스승님: 기존 저항을 받은 자리를 뚫고 조정 후 재돌파하는 시점이 힘이 강해지는 포인트.\n이제 이 자리는 지나가는 자리(지지)로 바뀝니다.")
+        alertMsg := alertMsg + "재돌파 " + fp(close) + " / "
+    if not na(failZ) and failZ.strength >= 3
+        label.new(bar_index, low, "돌파실패", yloc = yloc.belowbar, style = label.style_label_up, color = color.new(resCol, 30), textcolor = color.white, size = size.tiny, tooltip = "돌파했던 매물대 아래로 다시 밀림: " + failZ.tags + " " + fp(failZ.key) + "\n스승님: 공격하고 밀리면 전쟁에서 진 겁니다. 그 자리는 다시 매물대.")
+    if not na(supBrkZ) and supBrkZ.strength >= 3
+        label.new(bar_index, low, "지지이탈", yloc = yloc.belowbar, style = label.style_label_up, color = color.new(resCol, 45), textcolor = color.white, size = size.tiny, tooltip = "소화된 매물대(지지) 이탈: " + fp(supBrkZ.key) + "\n스승님: 지지하는 것처럼 보이다가 빠진 구간이 매물대입니다.")
+
+// 매수 신호 (돌파 후 조정 · 지지 눌림)
+int    sigTier = 0
+string sigWhy  = ""
+if not na(buyZ) and confOK
+    lastBuyBar := bar_index
+    sigTier := buyZ.wasBoss or buyZ.maxVol or buyZ.kind == 7 ? 3 : (buyZ.kind == 8 or buyZ.strength >= 5 ? 2 : 1)
+    if buyTenth
+        sigTier := math.min(3, sigTier + 1)
+    if buyIsSup
+        sigTier := math.max(1, sigTier - 1)
+    sigWhy := buyZ.wasBoss ? "대장(마지막 매물대)" : buyZ.maxVol ? "최대 거래량 자리" : buyZ.tags
+    sigBuyAny := true
+    sigBuyStrong := sigTier == 3
+    string stars = sigTier == 3 ? "★★★" : sigTier == 2 ? "★★" : "★"
+    if showSignals
+        label.new(bar_index, low, (buyIsSup ? "지지 눌림 " : "돌파후 조정 ") + stars, yloc = yloc.belowbar, style = label.style_label_up, color = color.new(buyCol, 40), textcolor = color.white, size = size.tiny, tooltip = "줄: " + sigWhy + " " + fp(buyZ.key) + (buyTenth ? "\n조정 거래량 1/10 — 찬스" : ""))
+    alertMsg := alertMsg + "매수신호" + stars + " " + sigWhy + " " + fp(buyZ.key) + " / "
+
+// ───────────────────────── 11) 스승님 계좌: 스승님처럼 사고 판다 ─────────────────────────
+var int    vUnits  = 0
+var float  vAvg    = na
+var float  vTarget = na
+var float  vSell   = na
+var float  vStop   = na
+var int    vBar    = -1
+var string vWhy    = ""
+var bool   vHold   = false
+var bool   vReady  = false
+var float  vLim    = na
+var int    vLimBar = -1
+var string vLimWhy = ""
+var float  vLimShown = na
+var int    nTrades = 0
+var int    nWins   = 0
+var float  eqV     = 1.0
+var float  sumRet  = 0.0
+var float  lastRet = na
+var array<line> tLines = array.new<line>()
+
+bool   vBuyNow  = false
+bool   vSellNow = false
+bool   vAddNow  = false
+bool   vBuyLim  = false
+float  exPx     = na
+string exWhy    = ""
+bool   exAtLimit = false
+
+// (가) 보유 중이면 먼저 판다: 다음 매물대 90% · 고점 경고 · 저점 이탈
+if useTrade and vUnits > 0 and bar_index > vBar
+    if not na(vSell) and high >= vSell
+        exPx := math.max(open, vSell)
+        exWhy := "다음 매물대 " + fp(vTarget) + "의 " + str.tostring(sellPct, "#") + "% 도달 — 매물대를 보고 매도 가격을 산출한다"
+        exAtLimit := true
+    else if close < vStop
+        exPx := close
+        exWhy := "저점 " + fp(vStop) + " 종가 이탈 — 아직 매물 소화중, 저점 다시 확인 후"
+    else if warnGap and close > vAvg
+        exPx := close
+        exWhy := "고점 큰 갭상 " + sgn(gapPct) + "% — 고점에서 크게 갭상하면 던져야"
+    else if warnUpper or warnClimax
+        vReady := true
+    else if vReady and (isBear or close < nz(low[1]))
+        exPx := close
+        exWhy := "고점 경고 뒤 밀림 — 마무리, 팔 준비하던 자리"
+if not na(exPx)
+    float ret = exPx / vAvg - 1.0
+    float frac = math.min(1.0, float(vUnits) * unitPct / 100.0)
+    eqV := eqV * (1.0 + ret * frac)
+    sumRet += ret * 100.0
+    lastRet := ret * 100.0
+    nTrades += 1
+    nWins += ret > 0 ? 1 : 0
+    vSellNow := true
+    if showTrades
+        label.new(bar_index, high, "스승님 매도\n" + sgn(ret * 100.0) + "%", yloc = yloc.abovebar, style = label.style_label_down, color = ret > 0 ? sellCol : color.new(#607D8B, 0), textcolor = color.white, size = size.small, tooltip = exWhy + "\n매도가 " + fp(exPx) + " · 평단 " + fp(vAvg) + " · 비중 " + str.tostring(vUnits) + "/3")
+        tLines.push(line.new(vBar, vAvg, bar_index, exPx, color = color.new(ret > 0 ? buyCol : #607D8B, 30), width = 2))
+        if tLines.size() > 150
+            line.delete(tLines.shift())
+    alertMsg := alertMsg + "스승님 매도 " + fp(exPx) + " (" + sgn(ret * 100.0) + "%) " + exWhy + " / "
+    vUnits := 0
+    vAvg := na
+    vTarget := na
+    vSell := na
+    vStop := na
+    vHold := false
+    vReady := false
+
+// (나) 사는 자리 고르기
+float  rqPx  = na
+int    rqU   = 0
+string rqWhy = ""
+float  rqRef = na
+int    rqEx  = -1
+// ② 걸어놓은 저점이 체결
+if useTrade and vUnits == 0 and not na(vLim) and bar_index > vLimBar and low <= vLim
+    rqPx := math.min(open, vLim)
+    rqU := 2
+    rqWhy := vLimWhy
+    rqRef := vLim
+    vBuyLim := true
+// ① 줄 그은데 돌파하고 조정 나오면 산다
+if useTrade and na(rqPx) and vUnits == 0 and tradeOK and sigTier > 0
+    rqPx := close
+    rqU := sigTier
+    rqWhy := (buyIsSup ? "지지 눌림 — 상승 후 기존에 싸우던 자리가 오면 새로운 매수세" : sigTier == 3 ? "힘이 가장 강한 자리 — " + sigWhy + " 돌파 후 조정" : "줄 그은데 돌파하고 조정 — " + sigWhy) + (buyTenth ? " · 조정 거래량 1/10 찬스" : "")
+    rqRef := buyZ.bot
+    rqEx := buyZ.id
+// ③ 고점 돌파 후 조정 받다 바로 재돌파 → 따라 들어간다
+if useTrade and useChase and na(rqPx) and vUnits == 0 and tradeOK and confOK and not na(rbZ) and rbZ.strength >= 3
+    rqPx := close
+    rqU := 1
+    rqWhy := "재돌파 따라가기 — 고점 돌파 후 조정 받다 바로 돌파하면 따라 들어가도 된다 (" + fp(rbZ.key) + ")"
+    rqRef := rbZ.bot
+    rqEx := rbZ.id
+// ④ 신고가 5일선 눌림
+if useTrade and na(rqPx) and vUnits == 0 and tradeOK and sig5
+    rqPx := close
+    rqU := 1
+    rqWhy := "신고가 5일선 눌림 — 신고가 종목은 5일선 매매, 음봉 조정에서"
+    rqRef := math.min(low, sma5)
+
+if not na(rqPx)
+    rqRef := nz(rqRef, rqPx)
+    int u = mktCut and mktShaky ? math.max(1, rqU - 1) : rqU
+    vUnits := u
+    vAvg := rqPx
+    vBar := bar_index
+    vWhy := rqWhy
+    vTarget := nextAbove(zones, rqPx * 1.01, rqEx)
+    vSell := sellLevel(rqPx, vTarget, sellPct, sellBase)
+    vHold := na(vTarget)
+    vReady := false
+    float stS = rqRef * (1.0 - holdTolPct / 100.0)
+    float stT = floorBelow(zones, rqRef * 0.98, baseHigh, springLine, botPrice)
+    float st = stopMode == "엄격 (돌파선 이탈)" or na(stT) ? stS : stT * (1.0 - holdTolPct / 100.0)
+    vStop := math.max(st, rqPx * (1.0 - maxLossPct / 100.0))
+    if vStop >= rqPx
+        vStop := rqPx * (1.0 - maxLossPct / 100.0)
+    vLim := na
+    vLimShown := na
+    vBuyNow := true
+    lastBuyBar := bar_index
+    if showTrades
+        string tipE = vWhy + "\n매수가 " + fp(rqPx) + " · 비중 " + str.tostring(u) + "/3" + (mktCut and mktShaky ? " (시장 흔들림 → 1 줄임)" : "") + "\n" + (vHold ? "위에 매물대 없음 → 팔지 말고 보유 (고점 경고 나오면 정리)" : "목표(다음 매물대) " + fp(vTarget) + " · 매도선 " + fp(vSell)) + "\n정리 기준(저점) " + fp(vStop)
+        label.new(bar_index, low, "스승님 매수\n" + str.tostring(u) + "/3", yloc = yloc.belowbar, style = label.style_label_up, color = color.new(buyCol, u == 3 ? 0 : u == 2 ? 10 : 30), textcolor = color.white, size = u == 3 ? size.normal : size.small, tooltip = tipE)
+    alertMsg := alertMsg + "스승님 매수 " + fp(rqPx) + " 비중 " + str.tostring(u) + "/3 — " + vWhy + (vHold ? " · 보유관점" : " · 목표 " + fp(vTarget) + " 매도선 " + fp(vSell)) + " / "
+
+// (다) 보유 중 추가 매수: 재돌파 · 신고가 5일선 (최대 3/3)
+float addPx = na
+string addWhy = ""
+if useTrade and useChase and vUnits > 0 and vUnits < 3 and bar_index > vBar and confOK and not vSellNow
+    if not na(rbZ) and rbZ.strength >= 3 and close > vAvg
+        addPx := close
+        addWhy := "재돌파 추가 — 기존 저항을 뚫고 조정 후 재돌파, 힘이 강해지는 포인트"
+        float rbStop = rbZ.bot * (1.0 - holdTolPct / 100.0)
+        if rbStop < close
+            vStop := math.max(vStop, rbStop)
+    else if sig5 and close > vAvg
+        addPx := close
+        addWhy := "신고가 5일선 눌림 추가"
+if not na(addPx)
+    vAvg := (vAvg * float(vUnits) + addPx) / float(vUnits + 1)
+    vUnits += 1
+    vAddNow := true
+    if vHold
+        vTarget := nextAbove(zones, addPx * 1.01, -1)
+        vSell := sellLevel(addPx, vTarget, sellPct, sellBase)
+        vHold := na(vTarget)
+    if showTrades
+        label.new(bar_index, low, "추가 " + str.tostring(vUnits) + "/3", yloc = yloc.belowbar, style = label.style_label_up, color = color.new(buyCol, 45), textcolor = color.white, size = size.tiny, tooltip = addWhy + "\n추가가 " + fp(addPx) + " · 평단 " + fp(vAvg))
+    alertMsg := alertMsg + "스승님 추가 " + fp(addPx) + " 비중 " + str.tostring(vUnits) + "/3 / "
+
+// (라) 비어 있으면 저점을 걸어놓고 기다린다: X원 이하 매수
+if useTrade and useLimitBuy and vUnits == 0 and not vBuyNow and confOK
+    // 한번 걸어놓은 저점은 가격이 다가와도 내리지 않는다 (더 높은 저점이 생기면 올린다)
+    float newLim = na(vLim) or bar_index - vLimBar > 120 ? lowBuy : na(lowBuy) ? vLim : math.max(vLim, lowBuy)
+    if tradeOK and chartMade and not na(newLim) and ctype != 3 and ctype != 4
+        vLim := newLim
+        vLimBar := bar_index
+        vLimWhy := "저점 " + fp(vLim) + "원 이하 매수 — 차트가 만들어졌으니 저점 걸어놓고 기다린다"
+        if showTrades and (na(vLimShown) or math.abs(vLimShown / vLim - 1.0) > 0.03)
+            vLimShown := vLim
+            label.new(bar_index, vLim, "저점 걸기\n" + fp(vLim) + " 이하", style = label.style_label_left, color = color.new(baseCol, 60), textcolor = color.white, size = size.tiny, tooltip = "스승님: 저는 조정 구간에서 저점을 그어서 최고로 낮은 가격을 책정해서 매수를 합니다.\n단 매물벽을 허문 차트를 선택해야 가능한 영역입니다.")
+            alertMsg := alertMsg + "저점 걸기 " + fp(vLim) + " 이하 / "
+    else
+        vLim := na
+        vLimShown := na
+
+// 전략: 스승님 계좌를 그대로 따라 주문 (strategy 판에서만)
+// 저점 매수는 앞 봉에 걸어둔 지정가가 이미 체결됐으므로 다시 주문하지 않는다
+float qUnit = math.max(1.0, math.floor(strategy.equity * unitPct / 100.0 / close))  //#STR
+if not na(exPx) and not exAtLimit  //#STR
+    strategy.close_all(comment = "정리")  //#STR
+if vBuyNow and not vBuyLim  //#STR
+    strategy.entry("스승님", strategy.long, qty = qUnit * vUnits, comment = "매수 " + str.tostring(vUnits) + "/3")  //#STR
+if vAddNow  //#STR
+    strategy.entry("스승님", strategy.long, qty = qUnit, comment = "추가")  //#STR
+if vUnits > 0 and not na(vSell)  //#STR
+    strategy.exit("매도90", limit = vSell, comment = "매도 " + str.tostring(sellPct, "#") + "%")  //#STR
+else  //#STR
+    strategy.cancel("매도90")  //#STR
+if vUnits == 0 and not na(vLim)  //#STR
+    strategy.entry("스승님저점", strategy.long, qty = math.max(1.0, math.floor(strategy.equity * unitPct / 100.0 / vLim)) * (mktCut and mktShaky ? 1 : 2), limit = vLim, comment = "저점 매수")  //#STR
+else  //#STR
+    strategy.cancel("스승님저점")  //#STR
+
+plot(show5 ? sma5 : na, "5일선", color = color.new(#FF9800, 20), linewidth = 1)
+
+// ───────────────────────── 12) 마지막 봉: 매물대 박스 · 계획선 · 스승님 브리핑 ─────────────────────────
+var array<box>   zBoxes = array.new<box>()
+var array<label> gLbls  = array.new<label>()
+var array<line>  pLines = array.new<line>()
+var table tb = na
+
+if barstate.islast
+    for bx in zBoxes
+        box.delete(bx)
+    zBoxes.clear()
+    for gl in gLbls
+        label.delete(gl)
+    gLbls.clear()
+    for pl in pLines
+        line.delete(pl)
+    pLines.clear()
+    if showZones and zones.size() > 0
+        for z in zones
+            float dz = math.abs(z.key / close - 1.0) * 100.0
+            bool isBossZ = z.id == bossId
+            if dz <= zoneRange and (z.state != 3 or showSup) and zBoxes.size() < 450
+                int lft = math.max(z.born, bar_index - 4900)
+                int rgt = bar_index + extendBars
+                color c = z.state == 3 ? supCol : z.state == 0 ? (isBossZ ? bossCol : z.kind == 8 ? baseCol : resCol) : brkCol
+                int tr0 = z.state == 3 ? 90 : isBossZ ? 72 : 86 - math.min(z.strength, 6) * 2
+                string nm = z.state == 3 ? "지지(소화된 매물대)" : z.state == 0 ? (isBossZ ? "대장·마지막 매물대" : "매물대") : "돌파→조정 대기"
+                string tx = nm + " " + fp(z.key) + " · " + z.tags + " · 강도" + str.tostring(z.strength) + (z.touches > 0 ? " · 찌름" + str.tostring(z.touches) : "")
+                zBoxes.push(box.new(lft, z.top, rgt, z.bot, border_color = color.new(c, isBossZ ? 0 : 45), border_width = isBossZ ? 2 : 1, border_style = z.state == 3 ? line.style_dotted : line.style_solid, bgcolor = color.new(c, tr0), text = tx, text_size = size.tiny, text_color = color.new(c, 0), text_halign = text.align_right, text_valign = text.align_center))
+    if showGapFill and gaps.size() > 0
+        for g in gaps
+            if not g.filled and math.abs(g.mid / close - 1.0) * 100.0 <= zoneRange
+                gLbls.push(label.new(bar_index + 3, g.mid, "갭 메꿈 " + fp(g.mid), style = label.style_label_left, color = color.new(gapCol, 90), textcolor = gapCol, size = size.tiny, tooltip = "스승님: 갭을 띄우면 99% 메꿉니다. 갭상 시가 자리 반이라도 채웁니다."))
+
+    // ── 매매 계획 (스승님이 말하는 방식: X원 이하 매수, Y원 돌파하면 힘이 강해진다, Z원 가면 매도) ──
+    float planBuy  = vUnits > 0 ? vAvg : not na(vLim) ? vLim : not na(waitZ) ? waitZ.top : lowBuy
+    float planTgt  = vUnits > 0 ? vTarget : nextAbove(zones, nz(planBuy, close) * 1.01, -1)
+    float planSell = vUnits > 0 ? vSell : sellLevel(nz(planBuy, close), planTgt, sellPct, sellBase)
+    float planStop = vUnits > 0 ? vStop : floorBelow(zones, nz(planBuy, close) * 0.98, baseHigh, springLine, botPrice)
+    float planBrk  = na(bossZ) ? na : bossZ.top
+    if showPlan
+        int x1 = bar_index - 15
+        int x2 = bar_index + extendBars + 8
+        if not na(planBuy)
+            pLines.push(line.new(x1, planBuy, x2, planBuy, color = color.new(buyCol, 0), width = 2))
+            gLbls.push(label.new(x2, planBuy, (vUnits > 0 ? "평단 " : not na(waitZ) and na(vLim) ? "조정 매수 " : "매수 ") + fp(planBuy) + (vUnits > 0 ? "" : " 이하"), style = label.style_label_left, color = color.new(buyCol, 80), textcolor = buyCol, size = size.small))
+        if not na(planBrk)
+            pLines.push(line.new(x1, planBrk, x2, planBrk, color = color.new(bossCol, 0), width = 2, style = line.style_dashed))
+            gLbls.push(label.new(x2, planBrk, "돌파하면 힘 강해짐 " + fp(planBrk), style = label.style_label_left, color = color.new(bossCol, 80), textcolor = bossCol, size = size.small))
+        if not na(planTgt) and (na(planBrk) or math.abs(planTgt / planBrk - 1.0) > 0.005)
+            pLines.push(line.new(x1, planTgt, x2, planTgt, color = color.new(sellCol, 20), width = 1))
+            gLbls.push(label.new(x2, planTgt, "목표(다음 매물대) " + fp(planTgt), style = label.style_label_left, color = color.new(sellCol, 85), textcolor = sellCol, size = size.tiny))
+        if not na(planSell)
+            pLines.push(line.new(x1, planSell, x2, planSell, color = color.new(sellCol, 0), width = 1, style = line.style_dashed))
+            gLbls.push(label.new(x2, planSell, "매도 " + str.tostring(sellPct, "#") + "% " + fp(planSell), style = label.style_label_left, color = color.new(sellCol, 80), textcolor = sellCol, size = size.tiny))
+        if not na(planStop)
+            pLines.push(line.new(x1, planStop, x2, planStop, color = color.new(#607D8B, 0), width = 1, style = line.style_dotted))
+            gLbls.push(label.new(x2, planStop, "이 밑은 저점 깨짐 " + fp(planStop), style = label.style_label_left, color = color.new(#607D8B, 85), textcolor = #607D8B, size = size.tiny))
+
+    if showTable
+        // ── 하락 구간 양봉 수 (하락시 양봉 하나 없이 빠지면 합격) ──
+        bool inLeg = not na(hh60) and close <= hh60 * 0.92
+        int legLen = math.min(-hhOff60, 60)
+        int nBullLeg = 0
+        if inLeg and legLen > 0
+            for j = 0 to legLen
+                if isBullBody[j]
+                    nBullLeg += 1
+        // ── 차트 점수: 현재 자리에서 저항을 얼마나 받고 가느냐 ──
+        float score = 50.0
+        score += nOver == 0 ? 20.0 : -math.min(overStr * 1.5, 30.0)
+        if nearNH
+            score += 10.0
+        if not na(bsNH) and bsNH <= 20 and not nearNH
+            score += 5.0
+        if bar_index - lastBossDigest <= 120
+            score += 10.0
+        if bar_index - lastSpringBar <= 120 or (not na(baseHigh) and close > baseHigh)
+            score += 8.0
+        if holdPsy
+            score += 6.0
+        if inLeg and nBullLeg == 0
+            score += 4.0
+        if riseLow >= 500
+            score -= 20.0
+        else if riseLow >= 300
+            score -= 10.0
+        if not na(bsWarn) and bsWarn <= 5
+            score -= 10.0
+        if not na(botPrice) and close < botPrice
+            score -= 15.0
+        if ctype == 2
+            score -= 15.0
+        if ctype == 3 or ctype == 4
+            score -= 10.0
+        score := math.max(0.0, math.min(100.0, score))
+        string grade = score >= 80 ? "100점짜리 — 비중 실어도 되는 자리" : score >= 65 ? "좋은 차트 — 조정 때 매수" : score >= 50 ? "50점 — 매물 소화중, 지켜보기" : score >= 35 ? "40점 — 저항 많음" : "30점 — 손대지 마라"
+        color scCol = score >= 80 ? #FF3B30 : score >= 65 ? #FF9500 : score >= 50 ? #FFD60A : score >= 35 ? #64D2FF : #8E8E93
+
+        // ── 스승님 해설: 지금 이 차트를 스승님이 본다면 ──
+        string nz1 = na(nextZ) ? "" : fp(nextZ.key)
+        string bz1 = na(bossZ) ? "" : fp(bossZ.top)
+        string talk = switch ctype
+            1 => "바닥 대비 " + sgn(riseLow) + "% 오른 단물 빠진 차트예요.. 기업의 가치가 차트에 이미 반영됐어요. 쳐다보지 마세요. 최고점 " + fp(hhRise) + "원을 재돌파해야 그때 분석이 들어갑니다."
+            2 => "최저점과 최고점이 하나의 봉으로 연결된 호재 차트.. 일자로 오른 호재봉은 먹은 사람만 좋죠. 고점 " + fp(spikeTop) + "원을 뚫어줘야 다시 성장성 기대감이 생깁니다. 그 전엔 쳐다보지 마세요."
+            3 => "아직 떨어지는 중이에요.. 하락할 때도 매물대를 소화하면서 빠져야 합니다. 저점이 어디인가가 관건이에요. 빠져도 바로 회복해주는 자리를 확인하고 들어가세요." + (na(lowBuy) ? "" : " 저점 후보는 " + fp(lowBuy) + "원.")
+            4 => "아직 저점이 안 집혔어요.. 바닥 " + fp(botPrice) + "원 밑으로 빠져도 바로 올라오는지 보세요." + (na(baseHigh) ? "" : " 바닥에서 올라온 고점 " + fp(baseHigh) + "원을 돌파해줘야 차트가 만들어집니다.") + " 미리 사지 말고 기다리세요."
+            5 => "바닥 대비 " + sgn(riseLow) + "% 오른 보유자 영역 차트.. 저점에서 산 사람들의 자리예요. 신규 진입은 반대입니다. 보유자는 팔지 마시고 고점 경고 나오면 정리하세요."
+            6 => (waitZ.wasBoss ? "대장 " : "강한 매물대 ") + fp(waitZ.key) + "원을 뚫었어요. 매물대는 뚫으면 가는 게 아니라 조정의 시작.. 거래량 줄면서 음봉으로 " + fp(waitZ.top) + "원 근처까지 조정 나오면 그 자리가 힘이 가장 강한 자리입니다. 양봉 보고 따라가지 마세요."
+            7 => "위에 매물이 없어요. 신고가 차트는 5일선 매매.. 보유자는 팔지 마세요. 신규는 고점 돌파 후 조정, 음봉에서 보세요."
+            8 => nz1 + "원 매물대와 싸우는 중이에요.. 매물대를 소화하면 어떤 차트든 조정을 받습니다. " + nz1 + "원 돌파 후 조정 때 보세요. 지금 양봉에 들어가면 선발대 됩니다."
+            9 => fp(ll60) + "~" + fp(hh60) + " 박스권.. 숲이 무성한 저점 차트는 단타로 대응하세요. 하단 근처에서 사고 상단 근처에서 파는 겁니다." + (na(bossZ) ? "" : " " + bz1 + "원을 돌파해야 박스를 벗어납니다.")
+            10 => "매물대를 소화하고 상단에 올라탄 차트.. 조정을 받아도 바로 올라옵니다. 조정 받으면 받을수록 더 들어가야 할 자리예요." + (na(lowBuy) ? "" : " 저점 " + fp(lowBuy) + "원 이하 매수.")
+            => (na(nextZ) ? "" : "다음 매물 " + nz1 + "원까지는 갈 수 있어요. ") + (na(bossZ) ? "마지막 매물대는 소화됐어요." : "대장 " + bz1 + "원을 돌파해야 연속성이 생깁니다. 그 전엔 위에 매물이 기다립니다.")
+
+        // ── 매매 계획 문장 ──
+        string planTx = ""
+        if vUnits > 0
+            planTx := "보유 " + str.tostring(vUnits) + "/3 · 평단 " + fp(vAvg) + " (" + sgn((close / vAvg - 1.0) * 100.0) + "%)\n" + (vHold ? "위에 매물 없음 → 팔지 않고 보유" + (vReady ? " · 고점 경고! 밀리면 정리" : "") : "목표 " + fp(vTarget) + " · " + fp(vSell) + "원 가면 매도") + "\n" + fp(vStop) + "원 종가 이탈 시 정리"
+        else
+            planTx := (not na(vLim) ? fp(vLim) + "원 이하 매수 (걸어놓기)" : not na(waitZ) and tradeOK ? fp(waitZ.top) + "원 근처 음봉 조정에서 매수" : tradeOK ? "지금은 살 자리 없음 — 기다림" : "매수 안 함") + (not na(planBrk) ? "\n" + fp(planBrk) + "원 돌파하면 힘이 강해짐 → 돌파 후 조정 매수" : "") + (not na(planSell) ? "\n목표 " + fp(planTgt) + " · " + fp(planSell) + "원 가면 매도" : "")
+
+        // ── 오늘 일봉 해석 ──
+        string sOpen = gapPct >= 0.3 ? "갭상(" + sgn(gapPct) + "%)" : gapPct <= -0.3 ? "갭하락(" + sgn(gapPct) + "%)" : "보합 출발"
+        string sConn = gapPct <= -0.3 ? (high < prevC ? " → 전일종가 터치 못함(끊긴 종가=매물)" : " → 전일종가 회복 시도") : gapPct >= 0.3 ? (low <= prevC ? " → 전일종가 찍고 감(좋음)" : " → 갭 미메꿈(메꿈 예상)") : ""
+        string sShape = isUpper ? "상한가" : isBigBull ? "장대양봉" : isBigBear ? "장대음봉" : isBull ? "양봉" : isBear ? "음봉" : "보합"
+        string sWick = longUpWick ? " · 긴 윗꼬리(센타 " + fp((high + bTop) / 2.0) + ")" : (isBull and upWick <= rng * 0.03 and body >= 0.5 * rng) ? " · 무꼬리 양봉(조정 필수)" : (isBear and open >= high - syminfo.mintick) ? " · 무꼬리 음봉(시작부터 도망)" : ""
+        string sLow = loWick >= 0.4 * rng ? " · 긴 아랫꼬리(불안한 인원)" : ""
+        string candleTx = sOpen + sConn + "\n" + sShape + sWick + sLow
+        string volTx = "전일대비 " + (volume >= nz(volume[1]) ? "증가(빨강)" : "감소(파랑)") + " · 평균의 " + str.tostring(volX, "#.#") + "배" + (isClimax ? "\n거래량 터짐 = 관심이자 저항값" : (close < prevC and volX < 0.7) ? "\n거래량 줄며 조정 = 보유심리" : volX < 0.4 ? "\n거래량 실종 = 안 판다 심리" : "")
+
+        // ── 내일 볼 것 ──
+        string tmr = ""
+        int nT = 0
+        if vUnits > 0 and not vHold and not na(vSell)
+            tmr := tmr + "· " + fp(vSell) + "원 오면 매도, " + fp(vStop) + "원 종가 이탈 주의\n"
+            nT += 1
+        if not na(vLim) and vUnits == 0
+            tmr := tmr + "· " + fp(vLim) + "원 이하로 오면 매수 (걸어놓고 기다리기)\n"
+            nT += 1
+        if nT < 3 and longUpWick
+            tmr := tmr + "· 윗꼬리: 내일 바로 공격 못 하면 센타 " + fp((high + bTop) / 2.0) + "원은 매물\n"
+            nT += 1
+        if nT < 3 and not na(brkZ)
+            tmr := tmr + "· 오늘 " + fp(brkZ.key) + " 돌파 → 내일부터 조정 기다리기, 거래량 줄며 음봉이면 매수\n"
+            nT += 1
+        if nT < 3 and isClimax
+            tmr := tmr + "· 거래량 터짐: 조정 때 거래량이 1/10로 줄면 찬스\n"
+            nT += 1
+        if nT < 3 and isUpper and not nearHigh and not na(nextZ)
+            tmr := tmr + "· 하단 상한가 = 시작 신호지만 " + nz1 + "원 매물에 부딪친다\n"
+            nT += 1
+        if nT < 3 and gapPct >= gapUpPct and low > prevC
+            tmr := tmr + "· 갭 메꿈 " + fp((low + prevC) / 2.0) + "원까지 밀릴 수 있다 (99% 메꾼다)\n"
+            nT += 1
+        if nT < 3 and gapPct <= -0.3 and high < prevC
+            tmr := tmr + "· 끊긴 종가 " + fp(prevC) + "원: 돌파 전엔 매물 (갭하락 시작 종가 가면 매도 1원칙)\n"
+            nT += 1
+        if nT < 3 and isBullBody and not isUpper and not nearNH
+            tmr := tmr + "· 양봉 다음날 밀리면 10% 이상 밀린다 — 따라 사지 말 것\n"
+            nT += 1
+        if nT < 3 and loWick >= 0.4 * rng and riseLow < 100
+            tmr := tmr + "· 하단 아랫꼬리 — 꼬리 중간 " + fp((low + bBot) / 2.0) + "원 채우고 갈 가능성\n"
+            nT += 1
+        if nT == 0
+            tmr := na(nextZ) ? "· 위에 매물 없음 — 5일선 지키는지\n" : "· 다음 관문 " + nz1 + "원 돌파 여부\n"
+        tmr := str.substring(tmr, 0, str.length(tmr) - 1)
+
+        // ── 시장 ──
+        string mktTx = ""
+        if useMkt
+            if na(fxChg) or na(gdChg)
+                mktTx := "환율·금 심볼 확인 필요"
+            else
+                mktTx := "환율 20봉 " + sgn(fxChg) + "% · 금 " + sgn(gdChg) + "%"
+                if mktShaky
+                    mktTx := mktTx + "\n⚠ 환율·금 동반 상승 = 시장 흔들림, 비중 줄이기"
+                else if fxChg <= -1.5
+                    mktTx := mktTx + "\n환율 하락 = 외국인 자금 유입, 상승 기류"
+                else if fxChg >= 1.5
+                    mktTx := mktTx + "\n환율 상승 = 시장 조정 의미"
+        string idxTx = ""
+        if useIdx
+            if na(ixChg)
+                idxTx := "지수 심볼 확인 필요"
+            else
+                int ixBull = 0
+                for j = 0 to 9
+                    if nz(ixC[j]) > nz(ixO[j])
+                        ixBull += 1
+                idxTx := "20봉 " + sgn(ixChg) + "% · 최근10봉 양봉 " + str.tostring(ixBull) + "개"
+                if ixChg <= -3.0 and ixBull == 0
+                    idxTx := idxTx + "\n양봉 없이 하락 = 매물 안 만듦 (상승시 저항 적음)"
+                else if ixChg <= -3.0
+                    idxTx := idxTx + "\n양봉 음봉 섞여 하락 = 매물 소화하며 조정"
+
+        // ── 성적 ──
+        string recTx = nTrades == 0 ? "아직 매매 없음" : str.tostring(nTrades) + "번 · 승률 " + str.tostring(100.0 * nWins / nTrades, "#") + "% · 누적 " + sgn((eqV - 1.0) * 100.0) + "% (비중 반영)\n평균 " + sgn(sumRet / nTrades) + "% · 최근 " + sgn(nz(lastRet))
+
+        // ── 스승님 한마디 ──
+        bool nowBuy = bar_index - lastBuyBar <= 3
+        string quote = nowBuy ? "줄 그은데 돌파하고 조정 나오면 산다.\n대신 매물대를 보고 매도 가격을 산출한다." : ctype == 1 ? "우리는 많이 오른 종목이 더 갈 거라고 보는 게 아닙니다.\n매물대는 소화했는데 아직 크게 못 오른 종목을 찾는 겁니다." : ctype == 2 ? "항상 일자로 상승하는 호재성 봉은 나쁜 겁니다.\n계단식으로 적당한 양봉으로 오르는 종목이 크게 갑니다." : (ctype == 3 or ctype == 4) ? "미리 사지 말고, 난 저 자리 내려올 때까지 기다릴래.\n아님 말고 식으로 매매를 해야죠." : ctype == 5 ? "보유자 영역입니다. 최저점에서 매수한 사람들의 영역.\n신규 관점으로는 절대 쳐다보면 안 됩니다." : ctype == 6 ? "마지막 매물자리를 돌파해주고 조정을 받을 때\n그 자리에서 사면 힘이 가장 강한 자리에서 매매하는 겁니다." : ctype == 7 ? "매물대를 해소한 차트입니다. 팔지 마세요.\n신고가 나와도 팔지 마세요." : ctype == 8 ? "빨간 양봉을 보고 쫓아가면 안 됩니다.\n항상 매물대를 소화 후 조정 구간에서 진입하세요." : ctype == 9 ? "차트 위치에 따라 어느 때는 끊어 먹어야 하고\n어느 때는 보유를 해야 합니다." : ctype == 10 ? "상승은 매물대를 소화해야 하는 책무이고\n조정은 개인들을 털어내야 하는 과정이다." : "어느 지점을 돌파하지 않으면 아무리 저점이라도 안 쳐다봐요.\n힘이 가장 강한 자리에서 기다려요."
+
+        // ── 표 그리기 ──
+        if na(tb)
+            tb := table.new(tablePos == "오른쪽 위" ? position.top_right : tablePos == "오른쪽 아래" ? position.bottom_right : tablePos == "왼쪽 위" ? position.top_left : position.bottom_left, 2, 16, bgcolor = color.new(#0E1117, 8), frame_color = color.new(#FF5A36, 0), frame_width = 1, border_color = color.new(#2A303B, 0), border_width = 1)
+        table.clear(tb, 0, 0, 1, 15)
+        string tSz = tableSize == "아주 작게" ? size.tiny : tableSize == "보통" ? size.normal : size.small
+        color hc = color.new(#9AA4B2, 0)
+        color vc = color.new(#E6EDF3, 0)
+        int r = 0
+        table.cell(tb, 0, r, "🔥 불기둥 스승님", text_color = color.new(#FF5A36, 0), text_size = tSz, text_halign = text.align_left)
+        table.cell(tb, 1, r, timeframe.isdaily ? "일봉 · 매물대 · 심리" : "⚠ 일봉에서 보세요 (일봉 99%)", text_color = timeframe.isdaily ? hc : color.new(#FFD60A, 0), text_size = tSz, text_halign = text.align_left)
+        r += 1
+        table.cell(tb, 0, r, "차트 진단", text_color = hc, text_size = tSz, text_halign = text.align_left)
+        table.cell(tb, 1, r, ctName(ctype) + " · " + str.tostring(score, "#") + "점\n" + grade, text_color = scCol, text_size = tSz, text_halign = text.align_left, tooltip = "스승님: 차트의 점수는 현재 시점에서 저항을 얼마나 받고 가느냐가 척도입니다.\n위 25% 이내 매물대 " + str.tostring(nOver) + "개 (강도합 " + str.tostring(overStr, "#.#") + ")")
+        r += 1
+        table.cell(tb, 0, r, "스승님 입장", text_color = hc, text_size = tSz, text_halign = text.align_left)
+        table.cell(tb, 1, r, ctStance(ctype), text_color = color.new(#FFD60A, 0), text_size = tSz, text_halign = text.align_left)
+        r += 1
+        table.cell(tb, 0, r, "스승님 해설", text_color = color.new(#FF5A36, 0), text_size = tSz, text_halign = text.align_left)
+        table.cell(tb, 1, r, wrapTx(talk, wrapLen), text_color = vc, text_size = tSz, text_halign = text.align_left)
+        r += 1
+        table.cell(tb, 0, r, "매매 계획", text_color = hc, text_size = tSz, text_halign = text.align_left)
+        table.cell(tb, 1, r, planTx, text_color = vUnits > 0 ? color.new(#FF453A, 0) : vc, text_size = tSz, text_halign = text.align_left)
+        r += 1
+        table.cell(tb, 0, r, "내일 볼 것", text_color = hc, text_size = tSz, text_halign = text.align_left)
+        table.cell(tb, 1, r, tmr, text_color = vc, text_size = tSz, text_halign = text.align_left)
+        r += 1
+        if tableFull
+            table.cell(tb, 0, r, "첫 관문(다음 매물대)", text_color = hc, text_size = tSz, text_halign = text.align_left)
+            table.cell(tb, 1, r, na(nextZ) ? "위에 매물대 없음 → 연속성 구간" : nz1 + " (" + sgn((nextZ.key / close - 1.0) * 100.0) + "%) · " + nextZ.tags + " · 강도" + str.tostring(nextZ.strength) + (nextZ.touches > 0 ? " · 찌름" + str.tostring(nextZ.touches) : ""), text_color = color.new(resCol, 0), text_size = tSz, text_halign = text.align_left)
+            r += 1
+            table.cell(tb, 0, r, "대장(마지막 매물대)", text_color = hc, text_size = tSz, text_halign = text.align_left)
+            table.cell(tb, 1, r, na(bossZ) ? "없음 — 마지막 매물대 소화됨" : fp(bossZ.key) + " (" + sgn((bossZ.key / close - 1.0) * 100.0) + "%) · 강도" + str.tostring(bossZ.strength) + (bossZ.maxVol ? " · 최대거래량" : "") + " · " + bossZ.tags, text_color = color.new(bossCol, 0), text_size = tSz, text_halign = text.align_left)
+            r += 1
+            table.cell(tb, 0, r, "지지 · 저점", text_color = hc, text_size = tSz, text_halign = text.align_left)
+            table.cell(tb, 1, r, (na(supZ) ? "지지 없음" : "지지 " + fp(supZ.key) + " (" + sgn((supZ.key / close - 1.0) * 100.0) + "%)") + (na(lowBuy) ? "" : " · 저점 매수가 " + fp(lowBuy)) + (springOK ? " · 저점확인선 " + fp(springLine) : ""), text_color = color.new(supCol, 0), text_size = tSz, text_halign = text.align_left)
+            r += 1
+            table.cell(tb, 0, r, "바닥 · 바닥고점", text_color = hc, text_size = tSz, text_halign = text.align_left)
+            table.cell(tb, 1, r, (na(botPrice) ? "바닥 미확인" : "바닥 " + fp(botPrice)) + (na(baseHigh) ? "" : " · 바닥고점 " + fp(baseHigh) + (close > baseHigh ? " 돌파 ✓" : " 미돌파")) + " · 바닥대비 " + sgn(riseLow) + "%", text_color = color.new(baseCol, 0), text_size = tSz, text_halign = text.align_left)
+            r += 1
+            table.cell(tb, 0, r, "오늘 일봉", text_color = hc, text_size = tSz, text_halign = text.align_left)
+            table.cell(tb, 1, r, candleTx, text_color = isBull ? color.new(#FF453A, 0) : isBear ? color.new(#409CFF, 0) : vc, text_size = tSz, text_halign = text.align_left)
+            r += 1
+            table.cell(tb, 0, r, "거래량", text_color = hc, text_size = tSz, text_halign = text.align_left)
+            table.cell(tb, 1, r, volTx, text_color = volume >= nz(volume[1]) ? color.new(#FF453A, 0) : color.new(#409CFF, 0), text_size = tSz, text_halign = text.align_left)
+            r += 1
+            table.cell(tb, 0, r, "시장(환율·금·지수)", text_color = hc, text_size = tSz, text_halign = text.align_left)
+            table.cell(tb, 1, r, (useMkt ? mktTx : "꺼짐") + (useIdx ? "\n지수: " + idxTx : "") + (inLeg ? "\n이 종목 하락 구간 양봉 " + str.tostring(nBullLeg) + "개" + (nBullLeg == 0 ? " — 합격" : " — 다음 상승 때 매물") : ""), text_color = vc, text_size = tSz, text_halign = text.align_left)
+            r += 1
+        if useTrade
+            table.cell(tb, 0, r, "스승님 성적", text_color = hc, text_size = tSz, text_halign = text.align_left)
+            table.cell(tb, 1, r, recTx, text_color = eqV >= 1.0 ? color.new(#FF453A, 0) : color.new(#409CFF, 0), text_size = tSz, text_halign = text.align_left, tooltip = "지표가 스승님 규칙으로 직접 매매한 가상 기록입니다. 1비중 = 자산의 " + str.tostring(unitPct, "#") + "%. 수수료·세금 미반영. 과거 성과가 미래를 보장하지 않습니다.")
+            r += 1
+        table.cell(tb, 0, r, "스승님 한마디", text_color = color.new(#FF5A36, 0), text_size = tSz, text_halign = text.align_left)
+        table.cell(tb, 1, r, quote, text_color = color.new(#FFD60A, 0), text_size = tSz, text_halign = text.align_left)
+
+// ───────────────────────── 알림 ─────────────────────────
+alertcondition(vBuyNow, "스승님 매수", "불기둥 스승님 매수: {{ticker}} 종가 {{close}}")  //#IND
+alertcondition(vAddNow, "스승님 추가 매수", "불기둥 스승님 추가 매수: {{ticker}} 종가 {{close}}")  //#IND
+alertcondition(vSellNow, "스승님 매도·정리", "불기둥 스승님 매도: {{ticker}} 종가 {{close}}")  //#IND
+alertcondition(sigBuyAny, "매수 신호 (돌파 후 조정)", "불기둥 매수 신호 — 매물대 돌파 후 조정: {{ticker}} 종가 {{close}}")  //#IND
+alertcondition(sigBuyStrong, "강력 매수 신호 (대장·최대거래량)", "불기둥 ★★★ — 힘이 가장 강한 자리: {{ticker}} 종가 {{close}}")  //#IND
+alertcondition(sigRebreak, "재돌파 (힘 강해짐)", "불기둥 재돌파: {{ticker}} 종가 {{close}}")  //#IND
+alertcondition(sigSpring, "저점확인 (이탈 후 복구)", "불기둥 저점확인: {{ticker}} 종가 {{close}}")  //#IND
+alertcondition(warnAny and confOK, "고점 경고", "불기둥 고점 경고 (큰 갭상·고점 상한가·마무리 장대양봉): {{ticker}} 종가 {{close}}")  //#IND
+if useAlertMsg and str.length(alertMsg) > 0
+    alert("불기둥 스승님 [" + syminfo.ticker + "] " + alertMsg, alert.freq_once_per_bar_close)
