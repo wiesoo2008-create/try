@@ -1,0 +1,30 @@
+
+// ───────────────────────── 13) 거래량 · 보유심리 (아래 창) ─────────────────────────
+//  스승님 거래량 설정: 전일보다 많으면 빨간색, 적으면 파란색
+//  · 거래량이 터졌다 = 관심이자 저항값. 그 거래량을 '중화'시키는 조정이 나와야 간다.
+//  · 큰 거래량 뒤 거래량이 줄며 조정(1/10 수준) = 보유심리 → 재돌파 때 강하게 돌파.
+//  · 저점 근처에서 거래량이 실종되면 '안 판다' 심리. 상단에서 거래량 터지면 정리 준비.
+string G9 = "⑨ 거래량 · 보유심리 (아래 창)"
+color vUpCol     = input.color(#FF3B30, "전일보다 많음 (빨강)", group = G9)
+color vDnCol     = input.color(#2F6BFF, "전일보다 적음 (파랑)", group = G9)
+float holdRatio  = input.float(0.5, "보유심리: 터진 거래량 대비 ≤", minval = 0.05, maxval = 1.0, step = 0.05, group = G9)
+int   holdBars   = input.int(15, "보유심리 확인 기간(봉)", minval = 2, group = G9)
+float dryRatio   = input.float(0.4, "거래량 실종: 평균 ×", minval = 0.05, maxval = 1.0, step = 0.05, group = G9)
+
+bool volHold    = not na(bsClimax) and bsClimax > 0 and bsClimax <= holdBars and close <= prevC and nz(climaxV) > 0 and volume <= climaxV * holdRatio and close >= nz(climaxL)
+bool volDry     = nz(avgVol) > 0 and volume <= avgVol * dryRatio and not na(ll60) and low <= ll60 * 1.05
+bool topClimax  = isClimax and not na(hh60) and high >= hh60 * 0.95 and chg > 0
+bool upperNoVol = chg >= upperPct and nz(avgVol) > 0 and volume < avgVol * 1.5
+
+plot(volume, "거래량", color = volume >= nz(volume[1]) ? vUpCol : vDnCol, style = plot.style_columns)
+plot(avgVol, "평균 거래량", color = color.new(#9AA4B2, 0), linewidth = 1)
+plot(nz(avgVol) * climaxMult, "거래량 터짐 기준", color = color.new(#FF9500, 60), linewidth = 1)
+plotshape(isClimax and not isMaxVolBar and not topClimax, "거래량 터짐 (관심·저항값)", shape.triangledown, location.top, color.new(#FF9500, 0), text = "터짐", textcolor = color.new(#FF9500, 0), size = size.tiny)
+plotshape(isMaxVolBar, "최대 거래량 (돌파 후 조정 = 집팔고 논팔고)", shape.diamond, location.top, color.new(#9C27FF, 0), text = "최대", textcolor = color.new(#9C27FF, 0), size = size.small)
+plotshape(topClimax and not isMaxVolBar, "상단 거래량 터짐 (정리 준비)", shape.xcross, location.top, color.new(#1E5BFF, 0), text = "상단", textcolor = color.new(#1E5BFF, 0), size = size.tiny)
+plotshape(volHold, "보유심리 (거래량 줄며 조정)", shape.circle, location.bottom, color.new(#FF2D55, 0), text = "보유", textcolor = color.new(#FF2D55, 0), size = size.tiny)
+plotshape(volDry, "거래량 실종 (안 판다)", shape.square, location.bottom, color.new(#00A86B, 0), text = "실종", textcolor = color.new(#00A86B, 0), size = size.tiny)
+plotshape(upperNoVol, "거래량 없는 상한가", shape.flag, location.top, color.new(#FF3B30, 0), text = "무거래 상", textcolor = color.new(#FF3B30, 0), size = size.tiny)
+alertcondition(volHold, "거래량: 보유심리", "불기둥 거래량: 거래량 터진 뒤 거래량 줄며 조정 = 보유심리 {{ticker}}")
+alertcondition(isMaxVolBar, "거래량: 최대 거래량", "불기둥 거래량: 최대 거래량 — 이 자리 돌파 후 조정을 기다리세요 {{ticker}}")
+alertcondition(topClimax, "거래량: 상단 거래량 터짐", "불기둥 거래량: 상단에서 거래량 터짐 — 정리 준비 {{ticker}}")
